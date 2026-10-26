@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { BoardData } from '../src/core/board/boardData'
 import { createPlayerState, hasWon } from '../src/core/gameFlow/playerState'
 import { createPiece } from '../src/core/pieces/piece'
-import { applyMove, getValidMoves, ownBarrierTrackPosition, ownCorridorBarrierPosition, resolveBarrierElimination, wouldCapture } from '../src/core/rules/parchisRules'
+import { applyMove, barriersToOpenOnDouble, getValidMoves, resolveBarrierElimination, wouldCapture } from '../src/core/rules/parchisRules'
 import { defaultRuleSettings } from '../src/core/rules/ruleSettings'
 
 function buildTestBoard(): BoardData {
@@ -738,14 +738,11 @@ describe('parchisRules', () => {
 
   // Reported directly ("LAS BARRERAS SEAN LAS QUE SEAN FORMADAS POR QUIEN SEA DEBEN DE ABRIRSE SI
   // SE SACA UN DOBLE POR ALGUNO DE LOS COMPONENTES DE LA MISMA" - barriers, whatever they are and
-  // whoever forms them, must open if a double is rolled by one of their own components): these two
-  // functions are what turnManager.ts's own double-forces-open obligation (PK9.1) reads to decide
-  // whether a barrier exists at all - a gap here would silently exempt whichever combination it
-  // missed from ever being forced open, with no other check catching it. ownBarrierTrackPosition's
-  // own doc comment already explains why a pawn+own-Parkiller pair must count exactly the same as
-  // two pawns; these tests pin that down directly against the detector itself, not just indirectly
-  // through a full TurnManager roll.
-  describe('ownBarrierTrackPosition / ownCorridorBarrierPosition (PK9.1 - which barriers a double must open)', () => {
+  // whoever forms them, must open if a double is rolled by one of their own components): this is
+  // what turnManager.ts's own double-forces-open obligation (PK9.1) reads to decide which barriers
+  // exist at all - a gap here silently exempts whichever combination it misses from ever being
+  // forced open, with no other check catching it.
+  describe('barriersToOpenOnDouble (PK9.1 - which barriers a double must open)', () => {
     it('detects a plain two-pawn barrier on the track', () => {
       const board = buildTestBoard()
       const red = createPlayerState('Red', board)
@@ -754,7 +751,7 @@ describe('parchisRules', () => {
       red.pieces[1].state = 'OnTrack'
       red.pieces[1].trackPosition = 7
 
-      expect(ownBarrierTrackPosition(red)).toBe(7)
+      expect(barriersToOpenOnDouble(board, red, [red])).toEqual([{ kind: 'track', position: 7 }])
     })
 
     it('detects a pawn sharing a track square with the player own Parkiller, same as two pawns', () => {
@@ -765,7 +762,7 @@ describe('parchisRules', () => {
       red.parkiller.corridorPosition = red.parkiller.corridorLength
       red.parkiller.trackPosition = 7
 
-      expect(ownBarrierTrackPosition(red)).toBe(7)
+      expect(barriersToOpenOnDouble(board, red, [red])).toEqual([{ kind: 'track', position: 7 }])
     })
 
     it('detects a 3-stack (two pawns plus the player own Parkiller) as still needing to open', () => {
@@ -778,10 +775,27 @@ describe('parchisRules', () => {
       red.parkiller.corridorPosition = red.parkiller.corridorLength
       red.parkiller.trackPosition = 7
 
-      expect(ownBarrierTrackPosition(red)).toBe(7)
+      expect(barriersToOpenOnDouble(board, red, [red])).toEqual([{ kind: 'track', position: 7 }])
     })
 
-    it('does not flag a lone pawn sharing a square with a foreign Parkiller as the player own barrier', () => {
+    it('detects the player pawn paired with another color\'s pawn or Parkiller on a safe square', () => {
+      const board = buildTestBoard()
+      const red = createPlayerState('Red', board)
+      const blue = createPlayerState('Blue', board)
+      red.pieces[0].state = 'OnTrack'
+      red.pieces[0].trackPosition = 10 // safe square
+      blue.pieces[0].state = 'OnTrack'
+      blue.pieces[0].trackPosition = 10
+      expect(barriersToOpenOnDouble(board, red, [red, blue])).toEqual([{ kind: 'track', position: 10 }])
+
+      blue.pieces[0].state = 'InYard'
+      blue.pieces[0].trackPosition = -1
+      blue.parkiller.corridorPosition = blue.parkiller.corridorLength
+      blue.parkiller.trackPosition = 10
+      expect(barriersToOpenOnDouble(board, red, [red, blue])).toEqual([{ kind: 'track', position: 10 }])
+    })
+
+    it('does not count a different-color pairing on an unprotected square as a barrier', () => {
       const board = buildTestBoard()
       const red = createPlayerState('Red', board)
       const blue = createPlayerState('Blue', board)
@@ -790,7 +804,7 @@ describe('parchisRules', () => {
       blue.parkiller.corridorPosition = blue.parkiller.corridorLength
       blue.parkiller.trackPosition = 7
 
-      expect(ownBarrierTrackPosition(red)).toBeNull()
+      expect(barriersToOpenOnDouble(board, red, [red, blue])).toEqual([])
     })
 
     it('detects a plain two-pawn barrier in the home corridor', () => {
@@ -801,7 +815,26 @@ describe('parchisRules', () => {
       red.pieces[1].state = 'InHomeCorridor'
       red.pieces[1].corridorPosition = 1
 
-      expect(ownCorridorBarrierPosition(red)).toBe(1)
+      expect(barriersToOpenOnDouble(board, red, [red])).toEqual([{ kind: 'corridor', position: 1 }])
+    })
+
+    it('lists every barrier at once, not just the first one found', () => {
+      const board = buildTestBoard()
+      const red = createPlayerState('Red', board)
+      const blue = createPlayerState('Blue', board)
+      red.pieces[0].state = 'OnTrack'
+      red.pieces[0].trackPosition = 7
+      red.pieces[1].state = 'OnTrack'
+      red.pieces[1].trackPosition = 7
+      red.pieces[2].state = 'OnTrack'
+      red.pieces[2].trackPosition = 10
+      blue.pieces[0].state = 'OnTrack'
+      blue.pieces[0].trackPosition = 10
+
+      expect(barriersToOpenOnDouble(board, red, [red, blue])).toEqual([
+        { kind: 'track', position: 7 },
+        { kind: 'track', position: 10 },
+      ])
     })
   })
 

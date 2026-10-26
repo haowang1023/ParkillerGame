@@ -308,29 +308,15 @@ export function getValidMoves(
 // param below - a single frozen empty Set, not a fresh one per call, since it's never written to.
 const NO_PIECES_MOVED_THIS_ROLL: ReadonlySet<Piece> = new Set()
 
-// PC3/PK8: capturing is mandatory whenever available, not just one option among others - a player
-// can't dodge an available capture by choosing to move a different piece instead. TurnManager uses
-// this to filter its offered moves down to only the capturing ones whenever any exist. Pure/
-// read-only (no mutation), so it can be checked before a move is actually applied.
-export function wouldCapture(
+// The PK6 half of wouldCapture on its own: whether this move eliminates an opposing Parkiller.
+// TurnManager's double barrier obligation needs it separately - PK8 ("the removal of a Parkiller by
+// a pawn takes precedence over any other rule") is the only thing allowed to override opening a
+// barrier, an ordinary pawn capture is not.
+export function wouldCaptureParkiller(
   board: BoardData,
   move: MoveOption,
   allPlayers: readonly PlayerState[],
   allowParkillerCapture: boolean,
-  // Reported directly ("SALIO UN DOBLE 2 Y EL PARKI ESTABA A 4. MOVIO DOS, AL MOVER LOS OTROS DOS
-  // DEBIA MORIR POR EL PARKI...NO OCURRIO ESTO SINO QUE ELIMINO AL PARKI...AL PARKI SE LE ELIMINA
-  // SI SALE EL DOBLE DE LA DISTANCIA HACIA EL. NO LA SUMA" - a double 2 came up, the Parki was 4
-  // away; moved two, then moving the other two should have killed the PAWN via the Parki instead -
-  // that didn't happen, it eliminated the Parki instead; the Parki only dies if the double itself
-  // is the distance to it, not the sum): usesSingleDie below already excludes a single MoveOption
-  // built from dieA+dieB combined into one hop (diceSource 'sum') - but a double's two identical
-  // dice spent as two *separate* moves on the *same* piece (first the piece's own dieA, then that
-  // same piece's own dieB) is functionally the same "sum" outcome Carlos/Robert's own rule already
-  // excludes, just reached via two submitMove calls instead of one MoveOption. Distance only ever
-  // matches a single die's face value when measured from wherever the piece truly stood at this
-  // roll's own start - once it's already moved once this roll (present in this set), any further
-  // move's own resultingTrackPosition landing on the Parki reflects that accumulated distance, not
-  // a single die's own value, and must fall through to PK5 (the pawn dies) instead.
   alreadyMovedThisRoll: ReadonlySet<Piece> = NO_PIECES_MOVED_THIS_ROLL,
 ): boolean {
   if (move.kind !== 'ExitYard' && move.kind !== 'TrackMove') return false
@@ -360,6 +346,38 @@ export function wouldCapture(
     )
       return true
   }
+  return false
+}
+
+// PC3/PK8: capturing is mandatory whenever available, not just one option among others - a player
+// can't dodge an available capture by choosing to move a different piece instead. TurnManager uses
+// this to filter its offered moves down to only the capturing ones whenever any exist. Pure/
+// read-only (no mutation), so it can be checked before a move is actually applied.
+export function wouldCapture(
+  board: BoardData,
+  move: MoveOption,
+  allPlayers: readonly PlayerState[],
+  allowParkillerCapture: boolean,
+  // Reported directly ("SALIO UN DOBLE 2 Y EL PARKI ESTABA A 4. MOVIO DOS, AL MOVER LOS OTROS DOS
+  // DEBIA MORIR POR EL PARKI...NO OCURRIO ESTO SINO QUE ELIMINO AL PARKI...AL PARKI SE LE ELIMINA
+  // SI SALE EL DOBLE DE LA DISTANCIA HACIA EL. NO LA SUMA" - a double 2 came up, the Parki was 4
+  // away; moved two, then moving the other two should have killed the PAWN via the Parki instead -
+  // that didn't happen, it eliminated the Parki instead; the Parki only dies if the double itself
+  // is the distance to it, not the sum): usesSingleDie below already excludes a single MoveOption
+  // built from dieA+dieB combined into one hop (diceSource 'sum') - but a double's two identical
+  // dice spent as two *separate* moves on the *same* piece (first the piece's own dieA, then that
+  // same piece's own dieB) is functionally the same "sum" outcome Carlos/Robert's own rule already
+  // excludes, just reached via two submitMove calls instead of one MoveOption. Distance only ever
+  // matches a single die's face value when measured from wherever the piece truly stood at this
+  // roll's own start - once it's already moved once this roll (present in this set), any further
+  // move's own resultingTrackPosition landing on the Parki reflects that accumulated distance, not
+  // a single die's own value, and must fall through to PK5 (the pawn dies) instead.
+  alreadyMovedThisRoll: ReadonlySet<Piece> = NO_PIECES_MOVED_THIS_ROLL,
+): boolean {
+  if (move.kind !== 'ExitYard' && move.kind !== 'TrackMove') return false
+  const pos = move.resultingTrackPosition
+
+  if (wouldCaptureParkiller(board, move, allPlayers, allowParkillerCapture, alreadyMovedThisRoll)) return true
 
   // PC2.1: an ExitYard landing does NOT always capture a lone opposing pawn already on the entry
   // square the way a plain TrackMove does - see applyMove's own three actual pawn-capturing shapes
@@ -793,55 +811,54 @@ export function resolveBarrierElimination(moverColor: PieceColor, piecesAtSquare
   return a.arrivedAt >= b.arrivedAt ? a : b // both (mis)match the same way - later arrival goes
 }
 
-// PK9.1: "the same number on both dice (double)" obligates removing an existing barrier of the
-// player's *own* pawns before anything else that roll (PK9's own priority order puts this ahead of
-// PK9.2's rewards and PK9.3's shelter removal) - a barrier merely shared with an opponent (one own
-// pawn, one foreign) isn't "the player's own" to have to open, so only a same-color pair counts.
-// Only the player's own 4 pieces need checking, not the whole track. Returns the first one found if
-// somehow more than one exists (a rare-enough double edge case not worth its own tie-break rule).
-// A pawn sharing a square with the player's *own* Parkiller counts as this same "own barrier" too -
-// occupantsOnTrackSquare (above) already treats that pairing as a real 2-occupant barrier for
-// blocking everyone else's passage, so treating it as anything less than a real barrier here (the
-// one place that still only scanned player.pieces) left it structurally invisible to both PK9.1's
-// double-break priority and pieceIsInOwnBarrier's own non-double lockout - reported directly
-// ("no hay opción para que avance la que forma barrera con el Parki"): a double that also happened
-// to be the exit roll forced every yard pawn out instead, and the exit could land the exiting pawn
-// straight into an elimination the player had no way to avoid, since the actually-correct move (the
-// pawn breaking its barrier with the Parkiller) was never offered at all. Only the pawn half of the
-// pairing can ever appear as a candidate move here - the Parkiller itself never moves via these two
-// white dice, only its own black die - so nothing further is needed to keep this scoped correctly.
-export function ownBarrierTrackPosition(player: PlayerState): number | null {
-  const counts = new Map<number, number>()
-  for (const piece of player.pieces) {
-    if (piece.state !== 'OnTrack') continue
-    counts.set(piece.trackPosition, (counts.get(piece.trackPosition) ?? 0) + 1)
-  }
-  if (isParkillerOnTrack(player.parkiller)) {
-    const pos = player.parkiller.trackPosition
-    counts.set(pos, (counts.get(pos) ?? 0) + 1)
-  }
-  for (const [position, count] of counts) {
-    if (count >= 2) return position
-  }
-  return null
+export type BarrierLocation = { kind: 'track'; position: number } | { kind: 'corridor'; position: number }
+
+export function barrierLocationKey(location: BarrierLocation): string {
+  return `${location.kind}:${location.position}`
 }
 
-// Same obligation as ownBarrierTrackPosition, for a barrier formed in the player's own home
-// corridor instead of the shared track - PC2.4's own rulebook text names this outright ("a double
-// forces the player to open a barrier, including those in the finish zone"), and it's a real,
-// reachable state now that ownPiecesInCorridor's own cap allows two of a color's own pieces to
-// share a non-final corridor square (see that function's own comment). Deliberately excludes the
-// final slot - a piece there is 'Finished', not 'InHomeCorridor' (a different state entirely, not
-// counted here), and finished pieces are done playing regardless of how many share that square, so
-// there's nothing a double could meaningfully "break" there.
-export function ownCorridorBarrierPosition(player: PlayerState): number | null {
-  const counts = new Map<number, number>()
+// Every barrier a double obliges this player to open (PC2.4/PK9.1) - all of them, not just the
+// first found, so the player can open "una u otra" (either one). Three shapes count:
+// - two of the player's own pieces on one track square (two pawns, or a pawn and its own Parkiller);
+// - one of the player's own pawns paired with another color's pawn or Parkiller on a SAFE track
+//   square - PC2.4 ("two pawns of different colors in a protected area") and PK4 ("a Parkiller can
+//   form a barrier... with a pawn of a different color on a protected square"). The client asked
+//   for this long ago ("LAS BARRERAS SEAN LAS QUE SEAN FORMADAS POR QUIEN SEA DEBEN DE ABRIRSE SI
+//   SE SACA UN DOBLE POR ALGUNO DE LOS COMPONENTES DE LA MISMA"), but only the pawn+own-Parkiller
+//   pairing was ever implemented; the 03.10.2026 test report showed the rest with six screenshots
+//   ("PUEDE ABRIR LA QUE ESTA FORMADA CON UN PEON DE OTRO COLOR") - these used to be ignored
+//   entirely on a double, the "las barreras no se abren" the report kept repeating;
+// - two of the player's own pieces on one home-corridor square.
+export function barriersToOpenOnDouble(board: BoardData, player: PlayerState, allPlayers: readonly PlayerState[]): BarrierLocation[] {
+  const locations: BarrierLocation[] = []
+  const ownCounts = new Map<number, number>()
   for (const piece of player.pieces) {
-    if (piece.state !== 'InHomeCorridor') continue
-    counts.set(piece.corridorPosition, (counts.get(piece.corridorPosition) ?? 0) + 1)
+    if (piece.state === 'OnTrack') ownCounts.set(piece.trackPosition, (ownCounts.get(piece.trackPosition) ?? 0) + 1)
   }
-  for (const [position, count] of counts) {
-    if (count >= 2) return position
+  const ownPawnSquares = new Set(ownCounts.keys())
+  if (isParkillerOnTrack(player.parkiller)) {
+    const pos = player.parkiller.trackPosition
+    ownCounts.set(pos, (ownCounts.get(pos) ?? 0) + 1)
   }
-  return null
+  for (const [position, count] of ownCounts) {
+    if (count >= 2 && ownPawnSquares.has(position)) locations.push({ kind: 'track', position })
+  }
+  for (const position of ownPawnSquares) {
+    if ((ownCounts.get(position) ?? 0) >= 2 || !board.safeTrackIndices.has(position)) continue
+    const foreignPieceThere = allPlayers.some(
+      (p) =>
+        p.color !== player.color &&
+        (p.pieces.some((piece) => piece.state === 'OnTrack' && piece.trackPosition === position) ||
+          (isParkillerOnTrack(p.parkiller) && p.parkiller.trackPosition === position)),
+    )
+    if (foreignPieceThere) locations.push({ kind: 'track', position })
+  }
+  const corridorCounts = new Map<number, number>()
+  for (const piece of player.pieces) {
+    if (piece.state === 'InHomeCorridor') corridorCounts.set(piece.corridorPosition, (corridorCounts.get(piece.corridorPosition) ?? 0) + 1)
+  }
+  for (const [position, count] of corridorCounts) {
+    if (count >= 2) locations.push({ kind: 'corridor', position })
+  }
+  return locations
 }

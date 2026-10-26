@@ -11,7 +11,7 @@ import { BOARD_DEFINITIONS } from '../src/data/boards'
 import { toBoardData } from '../src/core/board/boardDefinition'
 import { createPlayerState, hasWon, type PlayerState } from '../src/core/gameFlow/playerState'
 import { TurnManager } from '../src/core/gameFlow/turnManager'
-import { isParkillerOnTrack, ownBarrierTrackPosition, ownCorridorBarrierPosition, wouldCapture } from '../src/core/rules/parchisRules'
+import { barrierLocationKey, barriersToOpenOnDouble, isParkillerOnTrack, wouldCaptureParkiller } from '../src/core/rules/parchisRules'
 import { defaultRuleSettings } from '../src/core/rules/ruleSettings'
 import type { DiceLike } from '../src/core/dice'
 import type { BoardData } from '../src/core/board/boardData'
@@ -265,8 +265,7 @@ function driveGame(board: BoardData, players: PlayerState[], rng: Rng, maxRolls:
   // itself forms one.
   let barrierSnapshotCapturedThisRoll = false
   let isDoubleThisRoll = false
-  let preRollTrack: number | null = null
-  let preRollCorridor: number | null = null
+  let preRollBarrierKeys = new Set<string>()
   manager.moveChoicesReady.on((moves) => {
     pendingMoves = moves
     if (isDoubleThisRoll) {
@@ -278,25 +277,18 @@ function driveGame(board: BoardData, players: PlayerState[], rng: Rng, maxRolls:
       // mid-reward, one event too early.
       if (!barrierSnapshotCapturedThisRoll && moves.some((m) => m.diceSource !== 'reward')) {
         barrierSnapshotCapturedThisRoll = true
-        preRollTrack = ownBarrierTrackPosition(manager.currentPlayer)
-        preRollCorridor = ownCorridorBarrierPosition(manager.currentPlayer)
+        preRollBarrierKeys = new Set(barriersToOpenOnDouble(ctx.board, manager.currentPlayer, players).map(barrierLocationKey))
       }
-      // Same fall-through as turnManager.ts's own barrierLocation: track takes priority *between
-      // two genuine obligations*, but a disqualified (not pre-roll) track barrier must fall
-      // through to the corridor one rather than reading as "no obligation at all."
-      const liveTrack = ownBarrierTrackPosition(manager.currentPlayer)
-      const liveCorridor = ownCorridorBarrierPosition(manager.currentPlayer)
-      const barrier: { kind: 'track' | 'corridor'; position: number } | null =
-        liveTrack !== null && liveTrack === preRollTrack
-          ? { kind: 'track', position: liveTrack }
-          : liveCorridor !== null && liveCorridor === preRollCorridor
-            ? { kind: 'corridor', position: liveCorridor }
-            : null
-      if (barrier) {
+      // Every pre-roll barrier still standing is an obligation, and the player may open any of
+      // them ("una u otra") - see barriersToOpenOnDouble's own doc comment.
+      const barriers = barriersToOpenOnDouble(ctx.board, manager.currentPlayer, players).filter((b) => preRollBarrierKeys.has(barrierLocationKey(b)))
+      if (barriers.length > 0) {
         const atBarrier = (m: MoveOption) =>
-          barrier.kind === 'track'
-            ? m.piece.state === 'OnTrack' && m.piece.trackPosition === barrier.position
-            : m.piece.state === 'InHomeCorridor' && m.piece.corridorPosition === barrier.position
+          barriers.some((b) =>
+            b.kind === 'track'
+              ? m.piece.state === 'OnTrack' && m.piece.trackPosition === b.position
+              : m.piece.state === 'InHomeCorridor' && m.piece.corridorPosition === b.position,
+          )
         // PK9.2's own reward moves (diceSource 'reward') are a separate move-offering phase with
         // their own rules, resolved before TurnManager ever returns to this obligation (see this
         // check's own opening comment) - not amounts a double's own two dice could ever produce
@@ -304,17 +296,18 @@ function driveGame(board: BoardData, players: PlayerState[], rng: Rng, maxRolls:
         // obligation at all.
         const dieMoves = moves.filter((m) => m.diceSource !== 'reward')
         // "(unless movement is impossible)" - the obligation only applies when a barrier-break was
-        // actually offered at all this roll (e.g. neither die's amount reaches/clears the corridor
-        // barrier's own square without overshooting) - checked by whether *any* offered move is at
-        // the barrier, not by independently recomputing legality (that would just re-derive
+        // actually offered at all this roll - checked by whether *any* offered move is at a
+        // barrier, not by independently recomputing legality (that would just re-derive
         // getValidMoves' own logic a second, easier-to-get-wrong way).
         const aBarrierBreakWasOffered = dieMoves.some(atBarrier)
         if (aBarrierBreakWasOffered) {
-          const violating = dieMoves.filter((m) => !atBarrier(m) && !wouldCapture(ctx.board, m, players, true))
+          // PK8: killing a Parkiller is the only move allowed instead of opening a barrier - an
+          // ordinary pawn capture is not.
+          const violating = dieMoves.filter((m) => !atBarrier(m) && !wouldCaptureParkiller(ctx.board, m, players, true))
           if (violating.length > 0) {
             fail(
               ctx,
-              `double roll must break ${manager.currentPlayer.color}'s own ${barrier.kind} barrier at ${barrier.position}, but also offered a non-barrier, non-capturing move: ${violating.map((m) => `${m.piece.color}#${m.piece.pieceIndex}(${m.kind},amount=${m.amount})`).join(',')}`,
+              `double roll must break one of ${manager.currentPlayer.color}'s barriers (${barriers.map(barrierLocationKey).join(',')}), but also offered a move that neither opens one nor kills a Parkiller: ${violating.map((m) => `${m.piece.color}#${m.piece.pieceIndex}(${m.kind},amount=${m.amount})`).join(',')}`,
             )
           }
         }

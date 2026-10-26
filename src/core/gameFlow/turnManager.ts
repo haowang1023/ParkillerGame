@@ -4,13 +4,15 @@ import type { PieceColor } from '../pieceColor'
 import { snapshotPiece, type Piece, type PieceSnapshot } from '../pieces/piece'
 import {
   applyMove,
+  barrierLocationKey,
+  barriersToOpenOnDouble,
   getValidMoves,
   isParkillerOnTrack,
   opposingParkillerBlocksDoubleSumAt,
-  ownBarrierTrackPosition,
-  ownCorridorBarrierPosition,
   resolveBarrierElimination,
   wouldCapture,
+  wouldCaptureParkiller,
+  type BarrierLocation,
 } from '../rules/parchisRules'
 import type { MoveOption, MoveResult } from '../rules/moveOption'
 import type { RuleSettings } from '../rules/ruleSettings'
@@ -24,10 +26,6 @@ export interface DiceRoll {
   blackDie: number
 }
 
-/** A barrier obligation's location - the shared track or the player's own home corridor (PC2.4:
- * "including those in the finish zone"). `position` is a trackPosition for 'track', a
- * corridorPosition for 'corridor' - the two are separate numeric spaces. */
-type BarrierLocation = { kind: 'track'; position: number } | { kind: 'corridor'; position: number }
 
 /** Why moveNotPossible fired - reported directly (Carlos: "Cuando hay una barrera no se quieren
  * mover ninguno de los dos peones... no ha manera"): a wasted roll used to look identical to a
@@ -241,14 +239,13 @@ export class TurnManager {
   // "really just the sum, split into two hops" case that must NOT still count as a single-die
   // distance match. Cleared at the start of every requestRoll(), same as preRollBarrierCaptured.
   private piecesMovedThisRoll = new Set<Piece>()
-  // The barrier position offerMoves() most recently computed (PK9.1's own obligation) - kept as a
-  // field, not a local, so submitMove() can tell whether the move it's about to apply is the one
-  // breaking that barrier. Null whenever no barrier obligation was active on the last offerMoves()
-  // call. A barrier can be on the shared track or in the player's own home corridor (PC2.4's own
+  // The barriers offerMoves() most recently obligated (PK9.1's own obligation) - kept as a field,
+  // not a local, so submitMove() can tell whether the move it's about to apply is breaking one of
+  // them. Empty whenever no barrier obligation was active on the last offerMoves() call. A barrier can be on the shared track or in the player's own home corridor (PC2.4's own
   // rulebook text: a double forces the player to open a barrier "including those in the finish
   // zone") - `kind` distinguishes the two since track positions and corridor positions are
   // separate numeric spaces that can otherwise collide on the same number.
-  private lastOfferedBarrierPosition: BarrierLocation | null = null
+  private lastOfferedBarrierLocations: BarrierLocation[] = []
   // Reported directly by the client, with a chat transcript: PK9.1's "a double obligates breaking
   // an existing barrier" was firing for a barrier the roll's *own* first die had just formed a
   // moment earlier - "cuando la barrera se crea con una tirada no hay obligación de abrirla con el
@@ -257,7 +254,7 @@ export class TurnManager {
   // be the option to move a different piece). The rulebook's own wording ("if a barrier was present
   // at the start of the move") only ever meant a barrier that already existed *before* this roll -
   // "si ya hay una barrera formada y te sale un doble sí estás obligado" (if a barrier is *already*
-  // formed and you roll a double, yes you're obligated). offerMoves()'s own barrierLocation below
+  // formed and you roll a double, yes you're obligated). offerMoves()'s own barrierLocations below
   // only treats a *currently* detected barrier as this obligation if it matches this snapshot, so a
   // barrier the roll's own white-dice choices just created is a free choice, never a forced one.
   //
@@ -281,8 +278,11 @@ export class TurnManager {
   // second, unrelated pawn move instead. Tracking both kinds independently (each compared only
   // against its own snapshot) is the direct fix - track and corridor positions live in separate
   // numeric spaces anyway (BarrierLocation's own `kind` already exists for exactly that reason).
-  private preRollBarrierTrackPosition: number | null = null
-  private preRollBarrierCorridorPosition: number | null = null
+  // Every barrier standing before this roll's own white-dice choices (barrierLocationKey()s) -
+  // tracked as a set, not one track position plus one corridor position, so a player with several
+  // barriers at once (two track barriers, or an own one plus a mixed one) keeps each one as a real
+  // obligation.
+  private preRollBarrierKeys = new Set<string>()
   private preRollBarrierCaptured = false
   // PK9.1's own "IMPORTANT!" qualifier: breaking a barrier with one half of a double forbids using
   // the double's *other* half to put the barrier's other original pawn right back onto the same
@@ -372,7 +372,7 @@ export class TurnManager {
   }
 
   requestRoll() {
-    // See preRollBarrierTrackPosition's own doc comment - captured lazily, the first time
+    // See preRollBarrierKeys' own doc comment - captured lazily, the first time
     // offerMoves() runs this roll (see there), not here: the automatic Parkiller move and any
     // Parkiller-kill reward chain both still count as "before this roll's own white-dice choices," per the
     // existing pawn+own-Parkiller barrier test below.
@@ -727,20 +727,17 @@ export class TurnManager {
   // from leaving voluntarily, on any kind of move (an ordinary die, the sum, or a reward - see
   // offerReward's own matching comment for why that one took a second, separate report to fix).
   //
-  // Reported directly, via a systematic rules audit Carlos himself requested: `ownBarrierCorridor`
-  // below used to only ever get computed `ownBarrierTrack === null ? ... : null` - the instant a
-  // player also had a barrier on the shared track, their own separate corridor barrier (a fully
-  // legitimate simultaneous state, using all 4 of a color's own pieces - 2 in each) went completely
-  // invisible to this check. Both barrier kinds are independent detectors (ownBarrierTrackPosition/
-  // ownCorridorBarrierPosition each only ever scan this same player's own 4 pieces) and can
-  // coexist - computing both unconditionally fixes this.
+  // Reported directly, via a systematic rules audit Carlos himself requested: a corridor barrier
+  // used to be checked only when there was no track barrier, so a player with one of each (all 4
+  // of a color's pieces, 2 in each) never had the corridor one enforced. barriersToOpenOnDouble
+  // now lists every barrier of every kind at once, so none can hide another.
   private offerMoves() {
     const state = this.diceState
     if (!state) return
 
     // A barrier piece is never excluded from an ordinary dieA/dieB/sum move just for sitting in a
     // barrier - the player can always choose to move it normally, on any roll. Only the double-forces-open
-    // obligation further down (barrierLocation/applyObligations) ever *restricts* moves down to a
+    // obligation further down (barrierLocations/applyObligations) ever *restricts* moves down to a
     // barrier-break when a barrier already exists, and that's a double-only, mandatory narrowing,
     // not an exclusion on every other roll.
     const isDoubleRoll = state.dieA === state.dieB
@@ -793,51 +790,39 @@ export class TurnManager {
     // the rulebook's own qualifier: if nothing can break it this roll, the restriction below comes
     // back empty and the obligation is waived rather than forcing a false moveNotPossible.
     //
-    // A track barrier and a corridor barrier existing *simultaneously* is a real, reachable edge
-    // case (see preRollBarrierTrackPosition's own doc comment) - both are always computed
-    // independently (never short-circuited on one another) so neither can hide the other, whether
-    // for the pre-roll snapshot below or for deciding which one is a live obligation right now.
-    const ownBarrierTrack = ownBarrierTrackPosition(this.currentPlayer)
-    const ownBarrierCorridor = ownCorridorBarrierPosition(this.currentPlayer)
-    // See preRollBarrierTrackPosition's own doc comment - captured from these same two independent
-    // checks, but only on the *first* offerMoves() call this roll (before any white-dice move has
-    // touched anything), then reused unchanged on every later call this same roll.
+    // Every barrier this player has is a candidate (barriersToOpenOnDouble's own comment), so with
+    // more than one the player picks which to open - "puede abrir una u otra". A barrier this
+    // roll's own earlier die just formed is excluded via the pre-roll snapshot below; one broken
+    // earlier this roll simply isn't in the live list any more, so the double's other die moves on
+    // to whichever pre-roll barrier is still standing, if any.
+    const liveBarriers = barriersToOpenOnDouble(this.board, this.currentPlayer, this.players)
+    // See preRollBarrierKeys' own doc comment - captured only on the *first* offerMoves() call this
+    // roll (before any white-dice move has touched anything), then reused unchanged.
     if (!this.preRollBarrierCaptured) {
-      this.preRollBarrierTrackPosition = ownBarrierTrack
-      this.preRollBarrierCorridorPosition = ownBarrierCorridor
+      this.preRollBarrierKeys = new Set(liveBarriers.map(barrierLocationKey))
       this.preRollBarrierCaptured = true
     }
-    // Only a barrier that already existed before this roll's own white-dice choices is an
-    // obligation; one this roll's own earlier die just formed (or moved a piece into) is not.
-    // Track still takes priority *between two genuine obligations* (this obligation's own
-    // pre-corridor-barrier precedent), but a *disqualified* track barrier (currently there, but
-    // only because an earlier die this same roll put it there) must fall through to the corridor
-    // check rather than reading as "no obligation at all" and silently letting the corridor
-    // barrier - genuinely pre-existing, untouched by anything that's happened this roll - go
-    // unenforced. Reported directly, with a screenshot ("DOBLE 4 AMARILLA DEBE ABRIR BARRERA!!!!
-    // ARRIBA Y NO MOVER OTRO PEON ANTES"): the short-circuited version this replaced could not
-    // represent that fall-through at all - it picked one BarrierLocation up front and only ever
-    // asked "is this one legitimate", with no path back to the other kind once the first one
-    // turned out not to be.
-    const barrierLocation: BarrierLocation | null =
-      state.dieA !== state.dieB
-        ? null
-        : ownBarrierTrack !== null && ownBarrierTrack === this.preRollBarrierTrackPosition
-          ? { kind: 'track', position: ownBarrierTrack }
-          : ownBarrierCorridor !== null && ownBarrierCorridor === this.preRollBarrierCorridorPosition
-            ? { kind: 'corridor', position: ownBarrierCorridor }
-            : null
-    this.lastOfferedBarrierPosition = barrierLocation
+    const barrierLocations: BarrierLocation[] = isDoubleRoll ? liveBarriers.filter((b) => this.preRollBarrierKeys.has(barrierLocationKey(b))) : []
+    this.lastOfferedBarrierLocations = barrierLocations
     const pieceIsAtBarrier = (piece: Piece): boolean =>
-      barrierLocation !== null &&
-      (barrierLocation.kind === 'track'
-        ? piece.state === 'OnTrack' && piece.trackPosition === barrierLocation.position
-        : piece.state === 'InHomeCorridor' && piece.corridorPosition === barrierLocation.position)
-    const restrictToBarrierBreakOrCapture = (moves: MoveOption[]) =>
-      moves.filter((m) => pieceIsAtBarrier(m.piece) || wouldCapture(this.board, m, this.players, this.parkillerCapturableThisRoll, this.piecesMovedThisRoll))
+      barrierLocations.some((b) =>
+        b.kind === 'track'
+          ? piece.state === 'OnTrack' && piece.trackPosition === b.position
+          : piece.state === 'InHomeCorridor' && piece.corridorPosition === b.position,
+      )
+    // PK8: "the removal of a Parkiller by a pawn takes precedence over any other rule" - the only
+    // move that may be played instead of opening a barrier. An ordinary pawn capture (an exit that
+    // captures included) used to count too, a leftover from when the exit lock allowed it, removed
+    // there long ago; the client's 03.10.2026 report, with a screenshot: "ROJO DOBLE 5. primero debe
+    // abrir barrera por tener doble, luego salir con 5... NO PUEDE SALIR CON 5 Y COMER CON 5 SIN
+    // ABRIR LA BARRERA", and "TIENE PRIORIDAD MATAR AL PARKI QUE ABRIR LA BARRERA".
+    const restrictToBarrierBreakOrParkillerCapture = (moves: MoveOption[]) =>
+      moves.filter(
+        (m) => pieceIsAtBarrier(m.piece) || wouldCaptureParkiller(this.board, m, this.players, this.parkillerCapturableThisRoll, this.piecesMovedThisRoll),
+      )
     const applyObligations = (moves: MoveOption[], dieHasExit: boolean): MoveOption[] => {
-      if (barrierLocation !== null) {
-        const barrierMoves = restrictToBarrierBreakOrCapture(moves)
+      if (barrierLocations.length > 0) {
+        const barrierMoves = restrictToBarrierBreakOrParkillerCapture(moves)
         if (barrierMoves.length > 0) return barrierMoves
       }
       // sumHasExit restricts every move source alike, not just the sum's own moves - using either
@@ -888,7 +873,7 @@ export class TurnManager {
     // offerMoves() call always falls through to the plain per-die branch below, where there's only
     // one remaining source to offer anyway, nothing left to rank.
     const soleEligiblePiece = (() => {
-      if (state.dieA === state.dieB || dieAHasExit || dieBHasExit || sumHasExit || barrierLocation !== null || !dieAMoves || !dieBMoves) return null
+      if (state.dieA === state.dieB || dieAHasExit || dieBHasExit || sumHasExit || barrierLocations.length > 0 || !dieAMoves || !dieBMoves) return null
       const pieces = new Set([...dieAMoves.map((m) => m.piece), ...dieBMoves.map((m) => m.piece)])
       return pieces.size === 1 ? [...pieces][0] : null
     })()
@@ -909,7 +894,7 @@ export class TurnManager {
       // routed through applyObligations even here (dieHasExit=false, but sumHasExit is checked
       // inside it too) so a sum-only exit obligation restricts the sum's own other move options
       // exactly like it now restricts dieA/dieB's.
-      if (dieAMoves && dieBMoves && !dieAHasExit && !dieBHasExit && barrierLocation === null && sumMoves) {
+      if (dieAMoves && dieBMoves && !dieAHasExit && !dieBHasExit && barrierLocations.length === 0 && sumMoves) {
         addMoves(applyObligations(sumMoves, false))
       }
     }
@@ -931,7 +916,7 @@ export class TurnManager {
     // values purely because they share a lane, not because they'd share a square - this filter was
     // reading that coincidence as "recreating the barrier" and silently dropping the second pawn's
     // own genuine FinishMove. A Finished piece can never be part of a barrier at all (see
-    // ownCorridorBarrierPosition's own doc comment - the final slot is deliberately excluded from
+    // barriersToOpenOnDouble - only InHomeCorridor pieces count, a Finished one never does - so the final slot is excluded from
     // barrier counting), so no FinishMove can ever actually recreate one; excluding this move kind
     // outright is correct, not just a narrow patch for the double-1 case.
     options = this.excludeRecreatedBarrier(options)
@@ -1085,13 +1070,13 @@ export class TurnManager {
     // flagged as one, on a double (barrier-break obligation is only ever offered on a double, and
     // never via the sum, so this can't misfire on an unrelated own-color pair coincidentally
     // sharing a square for some other reason).
-    const brokenLocation = this.lastOfferedBarrierPosition
-    const startedAtBarrier =
-      brokenLocation !== null &&
-      (brokenLocation.kind === 'track'
-        ? before.state === 'OnTrack' && before.trackPosition === brokenLocation.position
-        : before.state === 'InHomeCorridor' && before.corridorPosition === brokenLocation.position)
-    if (!isRewardMove && this.diceState && this.diceState.dieA === this.diceState.dieB && startedAtBarrier && brokenLocation) {
+    const brokenLocation =
+      this.lastOfferedBarrierLocations.find((b) =>
+        b.kind === 'track'
+          ? before.state === 'OnTrack' && before.trackPosition === b.position
+          : before.state === 'InHomeCorridor' && before.corridorPosition === b.position,
+      ) ?? null
+    if (!isRewardMove && this.diceState && this.diceState.dieA === this.diceState.dieB && brokenLocation) {
       this.brokenBarrierThisRoll = {
         ...brokenLocation,
         resultingTrackPosition: move.resultingTrackPosition,
@@ -1100,7 +1085,7 @@ export class TurnManager {
     }
     // See brokenBarrierThisRoll's own doc comment ("NO PUEDEN AVANZAR CON UNA RECOMPENSA LOS DOS
     // MIEMBROS DE UNA BARRERA Y CREAR OTRA BARRERA") - a distinct trigger from the double-break
-    // case just above (no lastOfferedBarrierPosition to check against here at all, since
+    // case just above (no lastOfferedBarrierLocations to check against here at all, since
     // offerReward() never sets it - a reward can be granted on any roll, not just a double): this
     // move's own origin, checked directly against this same player's *other* pieces (which haven't
     // moved yet, so `before` still accurately describes what was there a moment ago), was a real

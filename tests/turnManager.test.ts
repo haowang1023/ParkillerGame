@@ -510,7 +510,7 @@ describe('TurnManager - mandatory departure (PC2.1)', () => {
   // on the very roll that also grants the bonus turn, instead of only after a second, separate
   // choice. Confirmed by reading offerMoves()/getValidMoves() that a barrier only ever blocks
   // *other* pieces from landing there (PC2.4) - never its own occupants from leaving voluntarily,
-  // on any kind of move, double or not (see ownBarrierTrackPosition's own doc comment) - so this
+  // on any kind of move, double or not (see barriersToOpenOnDouble's own doc comment) - so this
   // pins that the immediately-following bonus roll can still move both paired pawns normally, not
   // silently stuck, on an ordinary (non-double) roll.
   it('the two just-paired pawns on the entry square can still move normally on the very next (bonus) roll', () => {
@@ -1514,7 +1514,7 @@ describe('TurnManager - mandatory barrier removal on doubles (PK9.1)', () => {
   // of which piece is finishing. Two DIFFERENT pawns both breaking out of the same corridor barrier
   // by finishing were colliding on that coincidence and the second pawn's own genuine FinishMove was
   // silently dropped, even though finishing can never actually recreate a barrier (a Finished piece
-  // isn't part of any square's own occupant count - see ownCorridorBarrierPosition's own comment).
+  // isn't part of any square's own occupant count - see barriersToOpenOnDouble's own comment).
   it('both pawns of a barrier can finish off the same double when each is exactly one square from home', () => {
     const board = buildTestBoard()
     const red = createPlayerState('Red', board)
@@ -1668,7 +1668,7 @@ describe('TurnManager - mandatory barrier removal on doubles (PK9.1)', () => {
   // ficha que sale es eliminada. No hay opción para que avance la que forma barrera con el Parki"):
   // a pawn sharing a square with the player's *own* Parkiller is just as real an "own barrier" as
   // two own pawns (occupantsOnTrackSquare already treats it that way for blocking everyone else's
-  // passage - see parchisRules.ts) but ownBarrierTrackPosition used to only ever scan player.pieces,
+  // passage - see parchisRules.ts) but the own-barrier check used to only ever scan player.pieces,
   // so this pairing was structurally invisible to PK9.1's double-break priority. A double that also
   // happened to equal the exit roll fell through to the plain exit lock instead, forcing every yard
   // pawn out with no way to move the pawn that should have broken its barrier with the Parkiller -
@@ -1772,7 +1772,7 @@ describe('TurnManager - a normal roll can voluntarily move a piece out of its ow
   })
 
   // Same as above, but the barrier is a pawn sharing its square with the player's own Parkiller
-  // instead of a second pawn - see ownBarrierTrackPosition's own doc comment on why this pairing
+  // instead of a second pawn - see barriersToOpenOnDouble's own doc comment on why this pairing
   // counts as a real own barrier just like two own pawns do. Voluntary movement applies equally.
   it('also frees a pawn sharing its square with the player own Parkiller on a non-double roll', () => {
     const board = buildTestBoard()
@@ -1979,18 +1979,11 @@ describe('TurnManager - a normal roll can voluntarily move a piece out of its ow
     expect(red.parkiller.state).toBe('InPlay')
   })
 
-  // Reported directly, via a systematic rules audit Carlos himself requested: the double-forces-
-  // open obligation's own track/corridor barrier detection used to only ever compute a corridor
-  // barrier when there was *no* track barrier at all (`ownBarrierTrack === null ?
-  // ownCorridorBarrierPosition(...) : null`) - the instant a player also had a barrier on the
-  // shared track, their own separate corridor barrier went completely invisible to this check,
-  // even though a color's own 4 pieces splitting into a track pair and a separate corridor pair is
-  // a fully legitimate, reachable state. Re-scoped to a double roll (a non-double no longer locks
-  // either barrier at all - see this describe block's own header comment): confirms the double's
-  // obligation still correctly detects the track barrier (picked first, per this same priority's
-  // own doc comment) and restricts this roll to breaking *that* one specifically, leaving the
-  // corridor barrier's own pieces untouched this roll rather than silently offering them too.
-  it('a double roll targets only the track barrier when a corridor barrier also exists, per the track-first priority', () => {
+  // Reported directly, via a systematic rules audit Carlos himself requested: a corridor barrier
+  // used to be invisible to the double's obligation whenever a track barrier also existed. The
+  // client's 03.10.2026 report then settled which one a double opens when there are several: "PUEDE
+  // ABRIR UNA U OTRA" (either one) - so both barriers' pieces are offered, and nothing else.
+  it('a double roll with a track barrier and a corridor barrier offers to open either one, and nothing else', () => {
     const board = buildTestBoard()
     const red = createPlayerState('Red', board)
     const blue = createPlayerState('Blue', board)
@@ -2011,10 +2004,7 @@ describe('TurnManager - a normal roll can voluntarily move a piece out of its ow
 
     manager.requestRoll()
 
-    expect(offered.map((m) => m.piece)).toEqual(expect.arrayContaining([red.pieces[0], red.pieces[1]]))
-    expect(offered.some((m) => m.piece === red.pieces[2] || m.piece === red.pieces[3])).toBe(false)
-    expect(red.pieces[2].corridorPosition).toBe(1)
-    expect(red.pieces[3].corridorPosition).toBe(1)
+    expect(offered.map((m) => m.piece)).toEqual(expect.arrayContaining([red.pieces[0], red.pieces[1], red.pieces[2], red.pieces[3]]))
   })
 
   // Reported directly, from a real play session: dieA=4 landed a red pawn exactly on an opposing
@@ -2025,9 +2015,9 @@ describe('TurnManager - a normal roll can voluntarily move a piece out of its ow
   // free a *same-color* barrier (a double, or an opposing Parki) precisely because that one has a
   // defined release valve - a mixed pawn+Parkiller pairing has no such mechanism (the Parkiller
   // isn't the mover's own piece, and doubles don't move it at all), so treating it as a lock would
-  // strand it with no way out for either side. ownBarrierTrackPosition only ever counts a player's
-  // own 4 pieces (see its own doc comment) - the opposing Parkiller was never a candidate to begin
-  // with, so this pawn was never "in a barrier" for this obligation's own purposes at all.
+  // strand it with no way out for either side. A barrier only ever obliges its occupants to move
+  // *out* on a double (barriersToOpenOnDouble) - on any other roll, like this one, it never holds
+  // a piece in place.
   it('a pawn sharing a protected square with an opposing Parkiller is not locked - the other die still moves it', () => {
     const board = buildTestBoard()
     const red = createPlayerState('Red', board)
@@ -2272,5 +2262,110 @@ describe('TurnManager - pre-game starting-player roll-off', () => {
     manager.turnStarted.on((player) => (started = player.color))
     manager.start()
     expect(started).toBe('Red')
+  })
+})
+
+// The client's 03.10.2026 test report, with six screenshots of the same thing - "las barreras no se
+// abren": every one of them showed a barrier of two DIFFERENT colors on a safe square (PC2.4's own
+// "two pawns of different colors in a protected area"), which a double used to ignore entirely.
+// Plus: "puede abrir una u otra", and "NO PUEDE SALIR CON 5 Y COMER CON 5 SIN ABRIR LA BARRERA" -
+// only killing a Parki (PK8) may come before opening a barrier.
+describe('TurnManager - a double opens mixed-color barriers on a safe square too', () => {
+  it('a double forces the player to open a barrier of their pawn and another color\'s pawn on a safe square', () => {
+    const board = buildTestBoard()
+    const red = createPlayerState('Red', board)
+    const blue = createPlayerState('Blue', board)
+    red.pieces[0].state = 'OnTrack'
+    red.pieces[0].trackPosition = 10 // safe square
+    blue.pieces[0].state = 'OnTrack'
+    blue.pieces[0].trackPosition = 10 // Red + Blue barrier on a safe square
+    red.pieces[1].state = 'OnTrack'
+    red.pieces[1].trackPosition = 3 // a free pawn the double must NOT be spent on
+
+    const manager = new TurnManager(board, [red, blue], defaultRuleSettings(), new ScriptedDice([2, 2, 1]))
+    let offered: MoveOption[] = []
+    manager.moveChoicesReady.on((moves) => (offered = moves))
+    manager.requestRoll()
+
+    expect(offered.length).toBeGreaterThan(0)
+    expect(offered.every((m) => m.piece === red.pieces[0])).toBe(true)
+  })
+
+  it('with an own barrier and a mixed barrier, the player may open either one ("una u otra"), but not move a third pawn', () => {
+    const board = buildTestBoard()
+    const red = createPlayerState('Red', board)
+    const blue = createPlayerState('Blue', board)
+    red.pieces[0].state = 'OnTrack'
+    red.pieces[0].trackPosition = 5
+    red.pieces[1].state = 'OnTrack'
+    red.pieces[1].trackPosition = 5 // own barrier
+    red.pieces[2].state = 'OnTrack'
+    red.pieces[2].trackPosition = 10
+    blue.pieces[0].state = 'OnTrack'
+    blue.pieces[0].trackPosition = 10 // mixed barrier on a safe square
+    red.pieces[3].state = 'OnTrack'
+    red.pieces[3].trackPosition = 14 // a free pawn
+
+    const manager = new TurnManager(board, [red, blue], defaultRuleSettings(), new ScriptedDice([2, 2, 1]))
+    let offered: MoveOption[] = []
+    manager.moveChoicesReady.on((moves) => (offered = moves))
+    manager.requestRoll()
+
+    const offeredPieces = new Set(offered.map((m) => m.piece))
+    expect(offeredPieces.has(red.pieces[0]) || offeredPieces.has(red.pieces[1])).toBe(true)
+    expect(offeredPieces.has(red.pieces[2])).toBe(true)
+    expect(offeredPieces.has(red.pieces[3])).toBe(false)
+  })
+
+  it('a double 5 with a barrier on the entry square must open it first - it cannot exit and capture instead', () => {
+    const board = buildTestBoard()
+    const red = createPlayerState('Red', board)
+    const blue = createPlayerState('Blue', board)
+    red.pieces[0].state = 'OnTrack'
+    red.pieces[0].trackPosition = 0 // Red's own entry square, safe
+    blue.pieces[0].state = 'OnTrack'
+    blue.pieces[0].trackPosition = 0 // Red + Blue barrier there; a second Red exit would capture Blue
+    // red.pieces[1..3] stay in the yard
+
+    const manager = new TurnManager(board, [red, blue], defaultRuleSettings(), new ScriptedDice([5, 5, 1]))
+    let offered: MoveOption[] = []
+    manager.moveChoicesReady.on((moves) => (offered = moves))
+    manager.requestRoll()
+
+    expect(offered.some((m) => m.kind === 'ExitYard')).toBe(false)
+    expect(offered.every((m) => m.piece === red.pieces[0])).toBe(true)
+
+    manager.submitMove(red.pieces[0], 5)
+    // Barrier open - now the other 5 must take a pawn out of the shelter.
+    expect(offered.length).toBeGreaterThan(0)
+    expect(offered.every((m) => m.kind === 'ExitYard')).toBe(true)
+  })
+
+  it('killing a Parki may be chosen instead of opening a barrier (PK8), but an ordinary capture may not', () => {
+    const board = buildTestBoard()
+    const red = createPlayerState('Red', board)
+    const blue = createPlayerState('Blue', board)
+    red.pieces[0].state = 'OnTrack'
+    red.pieces[0].trackPosition = 5
+    red.pieces[1].state = 'OnTrack'
+    red.pieces[1].trackPosition = 5 // own barrier
+    red.pieces[2].state = 'OnTrack'
+    red.pieces[2].trackPosition = 9 // 3 away from Blue's Parki
+    blue.parkiller.corridorPosition = blue.parkiller.corridorLength
+    blue.parkiller.trackPosition = 12 // not a safe square
+    red.pieces[3].state = 'OnTrack'
+    red.pieces[3].trackPosition = 14
+    blue.pieces[0].state = 'OnTrack'
+    blue.pieces[0].trackPosition = 17 // 3 away from red.pieces[3] - an ordinary capture
+
+    const manager = new TurnManager(board, [red, blue], defaultRuleSettings(), new ScriptedDice([3, 3, 1]))
+    let offered: MoveOption[] = []
+    manager.moveChoicesReady.on((moves) => (offered = moves))
+    manager.requestRoll()
+
+    const offeredPieces = new Set(offered.map((m) => m.piece))
+    expect(offeredPieces.has(red.pieces[0]) || offeredPieces.has(red.pieces[1])).toBe(true)
+    expect(offered.some((m) => m.piece === red.pieces[2] && m.resultingTrackPosition === 12)).toBe(true)
+    expect(offeredPieces.has(red.pieces[3])).toBe(false)
   })
 })
