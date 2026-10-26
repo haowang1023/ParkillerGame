@@ -36,3 +36,13 @@ export class CaptureFlightHoldTracker {
     this.timeout = null
   }
 }
+
+// Whether clearing this animation hands off to a captured piece's own bounce-home flight - a pawn
+// capture on either hop of a move (including a double 5's simultaneous second exit) or a pawn a
+// Parkiller's own hop sends home. useTurnManager.ts's clear*Animation() call this so the hold
+// starts in the very same state update that clears the animation, not a render later.
+export function animationEndsWithCaptureFlight(
+  animation: { capturedPiece?: unknown; capturedPawn?: unknown; simultaneousWith?: { capturedPiece?: unknown } } | null,
+): boolean {
+  return Boolean(animation?.capturedPiece || animation?.capturedPawn || animation?.simultaneousWith?.capturedPiece)
+}

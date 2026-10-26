@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CaptureFlightHoldTracker } from '../src/hooks/captureFlightHold'
+import { animationEndsWithCaptureFlight, CaptureFlightHoldTracker } from '../src/hooks/captureFlightHold'
 
 // See CaptureFlightHoldTracker's own doc comment (src/hooks/captureFlightHold.ts) - the plain
 // timer class useTurnManager.ts's own captureFlightPending state is built on, pulled out
@@ -57,5 +57,23 @@ describe('CaptureFlightHoldTracker', () => {
 
     vi.advanceTimersByTime(1000)
     expect(changes).toEqual([true])
+  })
+})
+
+// useTurnManager.ts's clearMoveAnimation/clearParkillerAnimation start the capture-flight hold in
+// the same call that clears the animation, gated on this - so the one-render "everything settled"
+// gap that used to swallow the Parki-capture toast can't reopen for any of these capture shapes.
+describe('animationEndsWithCaptureFlight', () => {
+  it('is true for a pawn move that captured, its simultaneous second exit capturing, or a Parkiller hop that captured', () => {
+    expect(animationEndsWithCaptureFlight({ capturedPiece: {} })).toBe(true)
+    expect(animationEndsWithCaptureFlight({ capturedPiece: null, simultaneousWith: { capturedPiece: {} } })).toBe(true)
+    expect(animationEndsWithCaptureFlight({ capturedPawn: {} })).toBe(true)
+  })
+
+  it('is false when nothing was captured, or there is no animation at all', () => {
+    expect(animationEndsWithCaptureFlight({ capturedPiece: null })).toBe(false)
+    expect(animationEndsWithCaptureFlight({ capturedPawn: null })).toBe(false)
+    expect(animationEndsWithCaptureFlight({ capturedPiece: null, simultaneousWith: { capturedPiece: null } })).toBe(false)
+    expect(animationEndsWithCaptureFlight(null)).toBe(false)
   })
 })

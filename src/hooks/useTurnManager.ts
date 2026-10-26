@@ -5,7 +5,7 @@ import type { TurnManagerLike } from '../core/gameFlow/turnManagerLike'
 import type { Piece } from '../core/pieces/piece'
 import type { MoveOption } from '../core/rules/moveOption'
 import { playDiceRollSound } from '../ui/diceSound'
-import { CaptureFlightHoldTracker } from './captureFlightHold'
+import { animationEndsWithCaptureFlight, CaptureFlightHoldTracker } from './captureFlightHold'
 import { DeferredTurnSwitchTracker } from './deferredTurnSwitch'
 import { turnHandoffDelayMs } from './turnHandoffDelay'
 
@@ -156,8 +156,8 @@ export function useTurnManager(turnManager: TurnManagerLike) {
   // while the just-captured pawn's own flight was still genuinely playing - entirely local,
   // no bot, no network, reproducing the identical "reverts, then catches up" symptom. This state
   // - and captureFlightHoldRef below, which drives it - fixes that: true for exactly
-  // CAPTURE_RETURN_HOPS*HOP_DURATION_MS after either animation's own trailing edge (see the two
-  // effects below), consumed by GameBoardScreen's own animationsSettled alongside
+  // CAPTURE_RETURN_HOPS*HOP_DURATION_MS after either animation's own trailing edge (see
+  // clearMoveAnimation/clearParkillerAnimation), consumed by GameBoardScreen's own animationsSettled alongside
   // moveAnimation/parkillerAnimation.
   const [captureFlightPending, setCaptureFlightPending] = useState(false)
   // Lazy-initialized once per hook instance (not per render) - see CaptureFlightHoldTracker's own
@@ -192,22 +192,12 @@ export function useTurnManager(turnManager: TurnManagerLike) {
     deferredTurnSwitchRef.current?.setAnimationsSettled(!moveAnimation && !parkillerAnimation && !captureFlightPending)
   }, [moveAnimation, parkillerAnimation, captureFlightPending])
   useEffect(() => () => deferredTurnSwitchRef.current?.dispose(), [])
-  // Trailing-edge detection, same pattern as BoardScene.tsx's own captureFlights-spawning effects
-  // (moveAnimation/parkillerAnimation going from "had a capture" to null, in that exact tick) - see
-  // captureFlightPending's own doc comment just above for why this needs its own tracking here too,
-  // not just in the scene layer.
-  const prevMoveAnimationForCaptureRef = useRef<MoveAnimationRequest | null>(null)
-  useEffect(() => {
-    const prevMove = prevMoveAnimationForCaptureRef.current
-    if (!moveAnimation && (prevMove?.capturedPiece || prevMove?.simultaneousWith?.capturedPiece)) captureFlightHoldRef.current?.trigger()
-    prevMoveAnimationForCaptureRef.current = moveAnimation
-  }, [moveAnimation])
-  const prevParkillerAnimationForCaptureRef = useRef<ParkillerMoveResult | null>(null)
-  useEffect(() => {
-    const prevParkiller = prevParkillerAnimationForCaptureRef.current
-    if (!parkillerAnimation && prevParkiller?.capturedPawn) captureFlightHoldRef.current?.trigger()
-    prevParkillerAnimationForCaptureRef.current = parkillerAnimation
-  }, [parkillerAnimation])
+  // Latest values, read by clearMoveAnimation/clearParkillerAnimation below to decide whether the
+  // animation being cleared hands off to a capture flight.
+  const moveAnimationRef = useRef(moveAnimation)
+  moveAnimationRef.current = moveAnimation
+  const parkillerAnimationRef = useRef(parkillerAnimation)
+  parkillerAnimationRef.current = parkillerAnimation
   useEffect(() => () => captureFlightHoldRef.current?.dispose(), [])
   useEffect(() => {
     const unsubscribers = [
@@ -368,11 +358,22 @@ export function useTurnManager(turnManager: TurnManagerLike) {
     turnManager.submitMove(piece, amount)
   }
 
+  // Reported directly ("FALTA LA CELEBRACION CUANDO SE ELIMINA A UN PEON AL PARKI"), reproduced
+  // live: the capture flight's hold used to start from an effect reacting to the animation having
+  // already cleared - one render later. That one render had moveAnimation/parkillerAnimation null
+  // AND captureFlightPending still false, so animationsSettled read true for exactly one commit:
+  // GameBoardScreen's Parki-capture effect fired its fanfare and toast right then, and the very
+  // next render (the hold finally starting) flipped settled back off, ran that effect's cleanup and
+  // wiped the toast before it ever painted - the victim already consumed, nothing left to show once
+  // the flight really ended. Starting the hold in the same call that clears the animation lets
+  // React batch both into one render, so settled never blinks on mid-handoff for any consumer.
   function clearMoveAnimation() {
+    if (animationEndsWithCaptureFlight(moveAnimationRef.current)) captureFlightHoldRef.current?.trigger()
     setMoveAnimation(null)
   }
 
   function clearParkillerAnimation() {
+    if (animationEndsWithCaptureFlight(parkillerAnimationRef.current)) captureFlightHoldRef.current?.trigger()
     setParkillerAnimation(null)
   }
 
