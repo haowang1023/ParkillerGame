@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import type { WebGLRenderer } from 'three'
+import { recordDiagnosticEvent } from '../ui/diagnostics'
 
 // Reported directly, via a browser console screenshot: "THREE.WebGLRenderer: Context Lost." -
 // right after which the board just stayed permanently blank/gray, with nothing in this app ever
@@ -42,12 +43,14 @@ export function watchForContextLoss(
   const canvas = gl.domElement
   const handleLost = (event: Event) => {
     event.preventDefault()
+    recordDiagnosticEvent(`${diagnosticLabel}: contexto WebGL perdido`)
     console.warn(
       `[${new Date().toISOString()}] ${diagnosticLabel}: webglcontextlost fired directly on the <canvas> element (${canvas.width}x${canvas.height}px)`,
     )
     onLost?.()
   }
   const handleRestored = () => {
+    recordDiagnosticEvent(`${diagnosticLabel}: contexto WebGL restaurado`)
     console.info(`[${new Date().toISOString()}] ${diagnosticLabel}: webglcontextrestored fired directly on the <canvas> element`)
     onRestored?.()
   }
@@ -103,6 +106,7 @@ export function useCanvasRemountOnStuckContext(label: string): { canvasKey: numb
 
   const onCreated = useCallback(
     ({ gl }: { gl: WebGLRenderer }) => {
+      recordDiagnosticEvent(`${diagnosticLabel}: canvas creado`)
       console.info(`[${new Date().toISOString()}] ${diagnosticLabel}: Canvas created (new WebGLRenderer/context)`)
       watchForContextLoss(
         gl,
@@ -111,6 +115,7 @@ export function useCanvasRemountOnStuckContext(label: string): { canvasKey: numb
           console.warn(`[${new Date().toISOString()}] ${diagnosticLabel}: WebGL context lost - waiting for the browser to restore it`)
           remountTimeoutRef.current = setTimeout(() => {
             remountTimeoutRef.current = null
+            recordDiagnosticEvent(`${diagnosticLabel}: sin restaurar tras ${STUCK_CONTEXT_REMOUNT_MS}ms, canvas nuevo`)
             console.warn(`[${new Date().toISOString()}] ${diagnosticLabel}: context still lost after ${STUCK_CONTEXT_REMOUNT_MS}ms - forcing a fresh canvas`)
             setCanvasKey((key) => key + 1)
           }, STUCK_CONTEXT_REMOUNT_MS)

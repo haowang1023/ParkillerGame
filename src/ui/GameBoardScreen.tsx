@@ -17,7 +17,8 @@ import { ColorDrawModal, type ColorDrawEntry } from './ColorDrawModal'
 import { Confetti } from './Confetti'
 import { EliminationToast } from './EliminationToast'
 import { heldAlertClearDelayMs } from './heldAlertTiming'
-import { HelpModal } from './HelpModal'
+import { DiagnosticsModal, HelpModal } from './HelpModal'
+import { probeWebGL, textureStatusOf } from './diagnostics'
 import { getSelectedTrackIndex, getTrackLabel, isMusicMuted, nextMusicTrack, toggleMusicMuted } from './introMusic'
 import { PlayerLeftToast } from './PlayerLeftToast'
 import { RewardBurst } from './RewardBurst'
@@ -479,6 +480,19 @@ export function GameBoardScreen({
   // isn't one to pause anyway; it's all synchronous) keeps running underneath exactly like the exit
   // confirmation dialog already does.
   const [showingHelp, setShowingHelp] = useState(false)
+  const [showingDiagnostics, setShowingDiagnostics] = useState(false)
+  // See diagnostics.ts' own doc comment ("Sigue sin cargar los tableros al abrir"): a few seconds
+  // in, if the board art still hasn't loaded or this GPU can't display a texture at all, offer the
+  // technical report instead of leaving the player looking at a blank board with no way forward.
+  const [boardTrouble, setBoardTrouble] = useState(false)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const loaded = textureStatusOf(definition.boardImage)?.startsWith('cargada') ?? false
+      const probe = probeWebGL()
+      if (!loaded || !probe.supported || probe.textureUploadWorks === false) setBoardTrouble(true)
+    }, BOARD_TROUBLE_CHECK_MS)
+    return () => clearTimeout(timer)
+  }, [definition.boardImage])
   // Requested directly ("음악을 넣어야겠는데... 3개옵션으로 노래를 선택할수잇게 해달라... 말들을
   // 움직일때의 소리도 3가지로" - add music, let people choose from 3 song options, and also give
   // the piece-movement sound 3 different options): both preferences already existed as functions
@@ -711,7 +725,8 @@ export function GameBoardScreen({
   // its own pure function (see computeAwaitingMoveChoice's own doc comment just above for this
   // file's established reasoning) so this exact gating has a test - see
   // tests/gameBoardIdleTriggerActive.test.ts.
-  const idleTriggerActive = computeIdleTriggerActive({ canRoll, awaitingPieceChoice, showingHelp, showingSoundSettings, confirmingExit })
+  // The technical report is part of Help - copying it must not be interrupted by the idle countdown.
+  const idleTriggerActive = computeIdleTriggerActive({ canRoll, awaitingPieceChoice, showingHelp: showingHelp || showingDiagnostics, showingSoundSettings, confirmingExit })
 
   useEffect(() => {
     setNudgeDice(false)
@@ -1097,7 +1112,7 @@ export function GameBoardScreen({
 
       <div style={frameOverlayStyle} />
 
-      {idleWarningSecondsLeft !== null && !paused && !showingHelp && !showingSoundSettings && !confirmingExit && (
+      {idleWarningSecondsLeft !== null && !paused && !showingHelp && !showingDiagnostics && !showingSoundSettings && !confirmingExit && (
         <div style={idleWarningOverlayStyle} onClick={dismissIdleWarning}>
           <div style={idleWarningCountdownStyle}>{idleWarningSecondsLeft}</div>
           <div style={idleWarningTitleStyle}>¿Sigue ahí?</div>
@@ -1163,7 +1178,28 @@ export function GameBoardScreen({
         ))}
       </div>
 
-      {showingHelp && <HelpModal onClose={() => setShowingHelp(false)} />}
+      {showingHelp && (
+        <HelpModal
+          onClose={() => setShowingHelp(false)}
+          onShowDiagnostics={() => {
+            setShowingHelp(false)
+            setShowingDiagnostics(true)
+          }}
+        />
+      )}
+      {showingDiagnostics && <DiagnosticsModal boardImage={definition.boardImage} onClose={() => setShowingDiagnostics(false)} />}
+      {boardTrouble && !showingDiagnostics && (
+        <button
+          className="chunky-btn"
+          style={boardTroubleStyle}
+          onClick={() => {
+            setBoardTrouble(false)
+            setShowingDiagnostics(true)
+          }}
+        >
+          ¿No ves el tablero? Toca aquí
+        </button>
+      )}
 
       {showingSoundSettings && (
         <div style={overlayStyle}>
@@ -1591,6 +1627,25 @@ const medallionButtonStyle: React.CSSProperties = {
   cursor: 'pointer',
   fontFamily: 'system-ui, sans-serif',
   lineHeight: 1,
+}
+
+const BOARD_TROUBLE_CHECK_MS = 8000
+
+const boardTroubleStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: 'clamp(130px, 18vh, 170px)',
+  left: '50%',
+  transform: 'translateX(-50%)',
+  zIndex: 15,
+  padding: '8px 16px',
+  fontSize: 14,
+  fontWeight: 700,
+  color: '#2a2210',
+  background: 'linear-gradient(180deg, #ffe08a, #c9a24b)',
+  border: '2px solid #c9a24b',
+  borderRadius: 18,
+  boxShadow: '0 6px 16px rgba(0,0,0,0.45)',
+  cursor: 'pointer',
 }
 
 const overlayStyle: React.CSSProperties = {

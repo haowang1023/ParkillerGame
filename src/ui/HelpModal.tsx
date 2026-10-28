@@ -3,6 +3,9 @@
 // next to the exit one, written in the same simple, player-facing language the rest of this
 // screen's own copy already uses (Spanish, no PC*/PK* rule codes) - this is a reminder for someone
 // already playing, not the full rulebook.
+import { useMemo, useState } from 'react'
+import { buildDiagnosticReport } from './diagnostics'
+
 const BRAND_GOLD = '#c9a24b'
 
 interface Section {
@@ -64,7 +67,7 @@ const SECTIONS: Section[] = [
   },
 ]
 
-export function HelpModal({ onClose }: { onClose: () => void }) {
+export function HelpModal({ onClose, onShowDiagnostics }: { onClose: () => void; onShowDiagnostics?: () => void }) {
   return (
     <div style={backdropStyle} onClick={onClose}>
       <div style={cardStyle} onClick={(e) => e.stopPropagation()}>
@@ -95,6 +98,11 @@ export function HelpModal({ onClose }: { onClose: () => void }) {
           <a href="/rules.pdf" target="_blank" rel="noopener noreferrer" style={rulebookLinkStyle}>
             Ver el reglamento completo (PDF) ↗
           </a>
+          {onShowDiagnostics && (
+            <button onClick={onShowDiagnostics} style={diagnosticsLinkStyle}>
+              Información técnica
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -169,8 +177,22 @@ const footerStyle: React.CSSProperties = {
   padding: '12px 18px',
   borderTop: `2px solid ${BRAND_GOLD}55`,
   display: 'flex',
+  flexWrap: 'wrap',
+  gap: '8px 20px',
   justifyContent: 'center',
+  alignItems: 'center',
   background: 'rgba(0,0,0,0.15)',
+}
+
+const diagnosticsLinkStyle: React.CSSProperties = {
+  fontSize: 13,
+  fontWeight: 600,
+  color: '#bdb3a0',
+  background: 'none',
+  border: 'none',
+  textDecoration: 'underline',
+  cursor: 'pointer',
+  padding: 0,
 }
 
 const rulebookLinkStyle: React.CSSProperties = {
@@ -198,4 +220,62 @@ const sectionLineStyle: React.CSSProperties = {
   fontSize: 14,
   lineHeight: 1.45,
   color: '#e9e2d3',
+}
+
+// See diagnostics.ts' own doc comment - the report a player copies and sends when the board
+// doesn't show on their machine.
+export function DiagnosticsModal({ boardImage, onClose }: { boardImage?: string; onClose: () => void }) {
+  const report = useMemo(() => buildDiagnosticReport(boardImage), [boardImage])
+  const [copied, setCopied] = useState(false)
+  const copy = () => {
+    navigator.clipboard
+      ?.writeText(report)
+      .then(() => setCopied(true))
+      .catch(() => setCopied(false))
+  }
+  return (
+    <div style={backdropStyle} onClick={onClose}>
+      <div style={cardStyle} onClick={(e) => e.stopPropagation()}>
+        <div style={headerStyle}>
+          <span style={headerTitleStyle}>Información técnica</span>
+          <button className="chunky-btn" onClick={onClose} title="Cerrar" style={closeButtonStyle}>
+            ✕
+          </button>
+        </div>
+        <div style={scrollAreaStyle}>
+          <div style={sectionLineStyle}>Si el tablero no se ve bien, copia este texto y envíalo por WhatsApp.</div>
+          <pre style={reportStyle}>{report}</pre>
+        </div>
+        <div style={footerStyle}>
+          <button className="chunky-btn" onClick={copy} style={copyButtonStyle}>
+            {copied ? 'Copiado ✓' : 'Copiar'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const reportStyle: React.CSSProperties = {
+  margin: 0,
+  padding: 10,
+  fontSize: 11,
+  lineHeight: 1.4,
+  color: '#e9e2d3',
+  background: 'rgba(0,0,0,0.35)',
+  borderRadius: 8,
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+  userSelect: 'text',
+}
+
+const copyButtonStyle: React.CSSProperties = {
+  padding: '8px 22px',
+  fontSize: 14,
+  fontWeight: 800,
+  color: '#2a2210',
+  background: `linear-gradient(180deg, #ffe08a, ${BRAND_GOLD})`,
+  border: `2px solid ${BRAND_GOLD}`,
+  borderRadius: 18,
+  cursor: 'pointer',
 }

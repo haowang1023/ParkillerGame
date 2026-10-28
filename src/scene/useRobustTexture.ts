@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import * as THREE from 'three'
+import { recordTextureStatus } from '../ui/diagnostics'
 
 // Client reported directly, with screenshots: pieces and dice rendering fine, floating over
 // completely empty space - no board, no track squares at all. "A menudo el tablero no carga a la
@@ -178,7 +179,11 @@ export function loadWithRetry(url: string, attempt: number) {
     const delay = Math.min(RETRY_BASE_DELAY_MS * attempt, MAX_RETRY_DELAY_MS)
     setTimeout(() => loadWithRetry(url, attempt + 1), delay)
   }
-  const watchdog = setTimeout(retryAfterFailure, LOAD_TIMEOUT_MS)
+  const watchdog = setTimeout(() => {
+    if (!settled) recordTextureStatus(url, `intento ${attempt} sin respuesta tras ${LOAD_TIMEOUT_MS / 1000}s, reintentando`)
+    retryAfterFailure()
+  }, LOAD_TIMEOUT_MS)
+  recordTextureStatus(url, `cargando (intento ${attempt}${baseUrl !== url ? ', .jpg' : ''})`)
   fetch(requestUrl, { signal: controller.signal })
     .then((response) => {
       if (!response.ok) throw new Error(`useRobustTexture: HTTP ${response.status} for ${requestUrl}`)
@@ -192,15 +197,17 @@ export function loadWithRetry(url: string, attempt: number) {
       const texture = new THREE.Texture(image)
       texture.needsUpdate = true
       textureCache.set(url, texture)
+      recordTextureStatus(url, `cargada (intento ${attempt}, ${image.naturalWidth}x${image.naturalHeight})`)
       const subscribers = inFlight.get(url)
       inFlight.delete(url)
       subscribers?.forEach((notify) => notify(texture))
     })
-    .catch(() => {
+    .catch((error: unknown) => {
       // Also reached when `controller.abort()` above rejects this attempt's own fetch - `settled`
       // is already true by then (retryAfterFailure sets it before aborting), so this is a no-op:
       // the attempt that superseded this one is already the one driving things forward.
       if (settled) return
+      recordTextureStatus(url, `falló intento ${attempt}: ${error instanceof Error ? error.message : String(error)}, reintentando`)
       clearTimeout(watchdog)
       retryAfterFailure()
     })
