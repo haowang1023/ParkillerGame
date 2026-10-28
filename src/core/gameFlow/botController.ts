@@ -1,6 +1,6 @@
 import type { BoardData } from '../board/boardData'
 import type { PieceColor } from '../pieceColor'
-import { isParkillerOnTrack, wouldCapture } from '../rules/parchisRules'
+import { isParkillerOnTrack, wouldCapture, wouldCaptureParkiller } from '../rules/parchisRules'
 import type { MoveOption, MoveResult } from '../rules/moveOption'
 import type { Piece } from '../pieces/piece'
 import type { DiceRoll, ParkillerMoveResult } from './turnManager'
@@ -221,6 +221,10 @@ export class BotController {
   // gone). Cleared once that same color's pending choice actually resolves (moveApplied). Only ever
   // read by takeOverColor() itself.
   private lastMoveChoices: { color: PieceColor; moves: MoveOption[] } | null = null
+  // The same two facts TurnManager uses to decide whether a pawn landing on a Parkiller kills it
+  // (PK6) or dies on it (PK5): this roll is a double, and the pawn hasn't already moved this roll.
+  private rollIsDouble = false
+  private readonly movedThisRoll = new Set<Piece>()
   private readonly thinkDelayMs: number
   private readonly hopDurationMs: number
   private readonly diceSpinMs: number
@@ -294,6 +298,8 @@ export class BotController {
       // moveChoicesReady, every single roll - makes the ordering correct unconditionally, not just
       // by the current constants' own coincidence.
       session.diceRolled.on((roll) => {
+        this.rollIsDouble = roll.dieA === roll.dieB
+        this.movedThisRoll.clear()
         // See PARKI_REVEAL_HOLD_MS's own doc comment - the Parkiller's own hop no longer starts the
         // instant the dice reveal (diceSpinMs) finishes, it waits this much longer first now.
         this.markBusy(this.diceSpinMs + this.parkiRevealHoldMs + roll.blackDie * this.hopDurationMs)
@@ -321,6 +327,7 @@ export class BotController {
         // See lastMoveChoices' own doc comment above - cleared regardless of bot ownership, before
         // the bot-owned early-return just below (which must not skip this).
         if (this.lastMoveChoices?.color === result.movedPiece.color) this.lastMoveChoices = null
+        this.movedThisRoll.add(result.movedPiece)
         if (this.botColors.has(result.movedPiece.color)) return
         // A human move that self-eliminates (PK5) plays the same extra bounce-home hops a bot's
         // own move does - read directly off the already-resolved MoveResult instead of predicted
@@ -388,8 +395,12 @@ export class BotController {
     // of this method entirely when one's available - an exit is never risky (PC2.2's own entry
     // square is always a safe square) and never something to weigh against forming a barrier,
     // Parkiller exposure, or anything else this function otherwise guards against.
+    // Reported directly ("Salió un doble 1 a peón BOT que tenía delante al Parki a 1 casilla. Movió
+    // otro peón en vez del que eliminaba al Parki"): PK8 - "the removal of a Parkiller by a pawn
+    // takes precedence over any other rule and is resolved first". Ahead of the exit shortcut too.
+    const parkillerKills = moves.filter((m) => this.killsParkiller(m))
     const exitMoves = moves.filter((m) => m.kind === 'ExitYard')
-    if (exitMoves.length > 0) {
+    if (exitMoves.length > 0 && parkillerKills.length === 0) {
       const chosen = exitMoves[0]
       // See this method's own second pieceHighlighted.emit call, further below, for why this
       // waits on scheduleRespectingBusy(0, ...) before ever lighting up.
@@ -535,10 +546,8 @@ export class BotController {
     // land on or expose itself to an opposing Parkiller) is exactly a "risk-free" capture in this
     // file's own established sense - previously the selection below just fell through to whichever
     // move happened to come first, with no preference for capturing at all, even when one was
-    // sitting right there in the candidate list. Parkiller captures aren't covered here (allowParkillerCapture
-    // = false) - those only ever apply on the specific roll that produced doubles, tracked
-    // separately as TurnManager-internal state this class has no access to, and this request was
-    // specifically about eliminating a pawn.
+    // sitting right there in the candidate list. Killing a Parkiller is handled separately, ahead
+    // of everything (parkillerKills, near the top of this method).
     // Requested directly ("cuando cuente las recompensas idem: debe ver si elimina algún peón en
     // algún salto de 10 o se cae sobre un parki y se queda eliminado" - when counting rewards,
     // likewise: check whether it eliminates a pawn on some 10-jump, or lands on a Parki and gets
@@ -558,7 +567,7 @@ export class BotController {
     // use it, else whichever single die's own move goes farther. `>` (not `>=`) keeps the earliest
     // candidate on a tie.
     const largestAmount = candidates.reduce((best: MoveOption | undefined, m) => (best === undefined || m.amount > best.amount ? m : best), undefined)
-    const chosen = largestAmount ?? finalMoves[0] ?? safeMoves[0] ?? nonBarrierMoves[0] ?? moves[0]
+    const chosen = parkillerKills[0] ?? largestAmount ?? finalMoves[0] ?? safeMoves[0] ?? nonBarrierMoves[0] ?? moves[0]
     // Reported directly, with a screenshot: a piece was already glowing as "this is what the bot
     // picked" while the dice (specifically the black Parkiller die) were still visibly spinning -
     // "오락의 모든과정은 하나씩 차례대로 진행되여야한다" (every step of the game should happen one at a
@@ -632,12 +641,18 @@ export class BotController {
   // destination's current occupancy needs no such adjustment.
   private wouldWalkIntoUnprotectedParki(move: MoveOption): boolean {
     if (move.resultingTrackPosition === -1) return false
+    // Landing on it on a double's single die kills the Parkiller instead (PK6) - not a suicide.
+    if (this.killsParkiller(move)) return false
     if (this.session.board.safeTrackIndices.has(move.resultingTrackPosition)) return false
     for (const player of this.session.players) {
       if (player.color === move.piece.color) continue
       if (isParkillerOnTrack(player.parkiller) && player.parkiller.trackPosition === move.resultingTrackPosition) return true
     }
     return false
+  }
+
+  private killsParkiller(move: MoveOption): boolean {
+    return wouldCaptureParkiller(this.session.board, move, this.session.players, this.rollIsDouble, this.movedThisRoll)
   }
 
   // True when landing here leaves this piece within an *opposing* Parkiller's own one-roll reach

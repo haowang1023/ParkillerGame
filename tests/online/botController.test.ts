@@ -348,6 +348,37 @@ describe('BotController', () => {
     bots.dispose()
   })
 
+  // Reported directly: "Salió un doble 1 a peón BOT que tenía delante al Parki a 1 casilla. Movió
+  // otro peón en vez del que eliminaba al Parki." The bot's own "don't walk into a Parki" safety
+  // check treated the kill as a suicide and threw it away.
+  it('kills a Parki one square ahead on a double 1 instead of moving another pawn', () => {
+    const board = buildBigTestBoard()
+    const red = createPlayerState('Red', board)
+    const blue = createPlayerState('Blue', board)
+    red.pieces[0].state = 'OnTrack'
+    red.pieces[0].trackPosition = 6
+    red.pieces[1].state = 'OnTrack'
+    red.pieces[1].trackPosition = 30 // a free pawn the bot used to move instead
+    blue.parkiller.corridorPosition = blue.parkiller.corridorLength
+    blue.parkiller.trackPosition = 7 // one square ahead of red.pieces[0], not a safe square
+    const dice = new RecordingDice(new ScriptedDice([1, 1, 1, 2, 3, 1]))
+    const inner = new TurnManager(board, [red, blue], defaultRuleSettings(), dice)
+    const network = new FakeRoomNetwork(MASTER_ACTOR)
+    const transport = network.createTransport(MASTER_ACTOR)
+    const host = new HostTurnManagerBridge(inner, dice, [red, blue], transport, new Map<number, PieceColor>())
+    const thinkDelayMs = 10
+    const bots = new BotController(host, new Set<PieceColor>(['Red']), thinkDelayMs, 2, 2, 0, 0)
+
+    host.start()
+    vi.advanceTimersByTime(thinkDelayMs) // the roll fires
+    vi.advanceTimersByTime(4 + thinkDelayMs) // the first move fires
+
+    expect(blue.parkiller.state).toBe('Eliminated')
+    expect(red.pieces[0].trackPosition).toBe(7)
+
+    bots.dispose()
+  })
+
   // Reported directly, with a screen recording ("Había dos peones fuera. Movió uno solo 10... Los
   // otros 10 se perdieron, no movió nadie y pasó el turno" - there were two pawns out, it moved
   // only one 10, the other 10 was lost, nobody moved, and the turn passed): the split-preference
