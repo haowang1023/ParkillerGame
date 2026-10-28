@@ -354,13 +354,10 @@ describe('BotController', () => {
   // above used to fire unconditionally on the reward's own minimum amount, with no check for
   // whether a genuinely different piece could actually use the complementary half - "two pawns
   // out" doesn't mean the *other* one has a legal reward move from wherever it happens to sit.
-  // pieces[1] here sits at 37, close enough to its own home entrance (39) that a reward move by
-  // either 10 or 20 overshoots past the exact-count landing PC4/PC5 require (verified directly
-  // against getValidMoves: neither amount has a legal move for it from 37), so pieces[1] is never
-  // a real candidate for anything - the only genuine choice left is between the capturing piece's
-  // own 20-in-one or its own 10-split, and picking the split here would just throw away the other
-  // 10 for nothing, since nothing else could ever receive it.
-  it('takes the full reward amount instead of a wasted split when no other piece can use the remainder', () => {
+  // pieces[1] here sits at 37, close enough to its own home entrance (39) that a 10-square reward
+  // move overshoots past the exact-count landing PC4/PC5 require, so the capturing piece is the
+  // only one that can use either 10 - it must take both, nothing forfeited.
+  it('takes both 10s of a capture reward on the only piece that can use them, wasting nothing', () => {
     const board = buildBigTestBoard()
     const red = createPlayerState('Red', board)
     const blue = createPlayerState('Blue', board)
@@ -390,10 +387,13 @@ describe('BotController', () => {
     // the bot's own busy window open an extra fixed 2000ms for its own celebration (on top of its
     // own hop, amount(3)*hopDurationMs(2)=6) - the reward decision's own highlight has to wait that
     // whole 2006ms out before thinkDelayMs starts counting down toward its own submit.
-    vi.advanceTimersByTime(2006 + thinkDelayMs) // t=2040: the reward move fires
+    vi.advanceTimersByTime(2006 + thinkDelayMs) // t=2040: the first 10 fires (6 -> 16)
+    expect(red.pieces[0].trackPosition).toBe(16)
+    // Its own hop (10*hopDurationMs(2) = 20ms) then thinkDelayMs before the second 10 submits.
+    vi.advanceTimersByTime(20 + thinkDelayMs) // t=2070: the second 10 fires (16 -> 26)
 
-    // The full 20 in one move (6 -> 26), not the 10-split that would have nowhere to send its other
-    // half - pieces[1] stays exactly where it was, and nothing was ever forfeited.
+    // Both halves on the one piece that could use them - pieces[1] stays exactly where it was, and
+    // nothing was ever forfeited.
     expect(red.pieces[0].trackPosition).toBe(26)
     expect(red.pieces[1].trackPosition).toBe(37)
     expect(forfeited).toBeNull()
@@ -563,11 +563,8 @@ describe('BotController', () => {
   // Requested directly ("cuando cuente las recompensas idem: debe ver si elimina algún peón en
   // algún salto de 10 o se cae sobre un parki y se queda eliminado" - when counting rewards,
   // likewise: check whether it eliminates a pawn on some 10-jump): a reward move can capture too
-  // (PC5 chains a fresh 20 on top) - the split-exploration preference above is purely cosmetic
-  // (so a human watching bot play sees the split get used sometimes), while a capture during a
-  // reward has real value, so it must win out even though it isn't the "explore the smaller
-  // amount" option this test's own sibling above prefers.
-  it('prefers a capturing reward move over the split-exploration preference', () => {
+  // (PC5 chains a fresh 20 on top), so a 10 that captures must win over one that doesn't.
+  it('prefers a reward move that captures over one that does not', () => {
     const board = buildBigTestBoard()
     const red = createPlayerState('Red', board)
     const blue = createPlayerState('Blue', board)
@@ -578,7 +575,7 @@ describe('BotController', () => {
     blue.pieces[0].state = 'OnTrack'
     blue.pieces[0].trackPosition = 6
     blue.pieces[1].state = 'OnTrack'
-    blue.pieces[1].trackPosition = 26 // exactly 6 + 20 - the reward's own full amount lands here
+    blue.pieces[1].trackPosition = 16 // exactly 6 + 10 - the reward's first 10 lands here
 
     const dice = new RecordingDice(new ScriptedDice([3, 4, 1]))
     const inner = new TurnManager(board, [red, blue], defaultRuleSettings(), dice)
@@ -603,13 +600,12 @@ describe('BotController', () => {
     // holds the bot's own busy window open an extra fixed 2000ms for its own celebration, on top of
     // its own hop (amount(3)*hopDurationMs(100)=300) - 2300ms total - which the reward decision's
     // own highlight has to wait out before thinkDelayMs(50) starts counting down toward its submit.
-    vi.advanceTimersByTime(2300 + thinkDelayMs) // t=2600: the reward move fires (up to 20 squares)
+    vi.advanceTimersByTime(2300 + thinkDelayMs) // t=2600: the first 10 of the reward fires
 
-    // The full 20 was taken specifically because it captures blue.pieces[1] - not the 10-split
-    // this same scenario's sibling test above would otherwise prefer.
-    expect(red.pieces[0].trackPosition).toBe(26)
+    // piece0's 10 captures blue.pieces[1], piece1's 10 (0 -> 10) wouldn't - the capture wins.
+    expect(red.pieces[0].trackPosition).toBe(16)
     expect(blue.pieces[1].state).toBe('InYard')
-    expect(red.pieces[1].trackPosition).toBe(0) // untouched - the split was never taken
+    expect(red.pieces[1].trackPosition).toBe(0)
 
     bots.dispose()
   })

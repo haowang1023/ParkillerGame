@@ -56,7 +56,7 @@ const SECTIONS: Section[] = [
   },
   {
     title: 'Recompensas',
-    body: ['Capturar una ficha o un Parki le da 20 casillas de premio (puede repartirlas entre dos fichas). Llegar a la meta le da 10 más.'],
+    body: ['Capturar una ficha o un Parki le da 20 casillas de premio, que se cuentan de 10 en 10 (con la misma ficha o con dos distintas). Llegar a la meta le da 10 más.'],
   },
   {
     title: 'La meta',

@@ -264,6 +264,31 @@ describe('TurnManager - Parkiller (PK 1-8)', () => {
     expect(blue.parkiller.trackPosition).toBe(16)
   })
 
+  // Found by the full-game simulation: PK4's "only the pawn dies, the two Parkillers pair up" is for
+  // exactly one pawn beside its Parkiller. With two pawns plus the Parkiller, the barrier rule
+  // already takes one pawn - pairing the Parkillers as well left three pieces on one square.
+  it('a Parkiller landing on [two pawns + their own Parkiller] on a safe square never leaves three pieces there', () => {
+    const board = buildTestBoard()
+    const gold = createPlayerState('Gold', board)
+    const blue = createPlayerState('Blue', board)
+    gold.pieces[0].state = 'OnTrack'
+    gold.pieces[0].trackPosition = 15 // safe square
+    gold.pieces[1].state = 'OnTrack'
+    gold.pieces[1].trackPosition = 15
+    gold.parkiller.corridorPosition = gold.parkiller.corridorLength
+    gold.parkiller.trackPosition = 15
+    blue.parkiller.corridorPosition = blue.parkiller.corridorLength
+    blue.parkiller.trackPosition = 18 // reaches 15 with blackDie=3
+
+    const manager = new TurnManager(board, [blue, gold], defaultRuleSettings(), new ScriptedDice([1, 1, 3]))
+    manager.requestRoll()
+
+    const goldPawnsThere = gold.pieces.filter((p) => p.state === 'OnTrack' && p.trackPosition === 15).length
+    const parkisThere = [gold.parkiller, blue.parkiller].filter((k) => k.state === 'InPlay' && k.trackPosition === 15).length
+    expect(goldPawnsThere + parkisThere).toBeLessThanOrEqual(2)
+    expect(goldPawnsThere).toBe(1)
+  })
+
   it('does not capture a pawn sitting on a protected square', () => {
     const board = buildTestBoard()
     const red = createPlayerState('Red', board)
@@ -304,12 +329,10 @@ describe('TurnManager - Parkiller (PK 1-8)', () => {
     manager.requestRoll()
 
     expect(blue.parkiller.state).toBe('Eliminated')
-    // one 20-square grant, offered as a choice between one pawn moving 20 or two pawns moving 10 each
+    // one 20-square grant, counted 10 at a time (PK7: "each 10-space jump")
     expect(grants).toEqual([{ amount: 20, reason: 'parkillerCapture' }])
     expect(latestMoves.length).toBeGreaterThan(0)
-    expect(latestMoves.every((m) => m.diceSource === 'reward')).toBe(true)
-    expect(latestMoves.some((m) => m.amount === 20)).toBe(true)
-    expect(latestMoves.some((m) => m.amount === 10)).toBe(true)
+    expect(latestMoves.every((m) => m.diceSource === 'reward' && m.amount === 10)).toBe(true)
   })
 
   // Client's own "BARRIERS" rules page, case 4: "Two Parkis - can only be formed on a safe space."
@@ -390,11 +413,13 @@ describe('TurnManager - Parkiller (PK 1-8)', () => {
     // queued (offerNextReward's own one-grant-at-a-time draining) until this one is spent.
     expect(grants).toEqual([{ amount: 20, reason: 'parkillerCapture' }])
 
-    manager.submitMove(red.pieces[0], 20) // 0 -> 20, spends the first reward in full
+    manager.submitMove(red.pieces[0], 10) // 0 -> 10, first half of the first reward
+    manager.submitMove(red.pieces[0], 10) // 10 -> 20, the first reward spent in full
 
     // Spending the first grant drains the queue straight to the second one, offered the same way.
     expect(grants).toEqual([
       { amount: 20, reason: 'parkillerCapture' },
+      { amount: 10, reason: 'parkillerCapture' },
       { amount: 20, reason: 'parkillerCapture' },
     ])
 
@@ -487,15 +512,21 @@ describe('TurnManager - Parkiller (PK 1-8)', () => {
     expect(blue.parkiller.state).toBe('Eliminated')
     expect(grants).toEqual([{ amount: 20, reason: 'parkillerCapture' }])
 
-    // Takes the full 20 in one go, landing red.pieces[0] (now at 3) straight on green's Parkiller.
-    manager.submitMove(red.pieces[0], 20)
+    // Takes both 10s on the same pawn - the second one lands red.pieces[0] (3 -> 13 -> 23) straight
+    // on green's Parkiller.
+    manager.submitMove(red.pieces[0], 10)
+    expect(grants).toEqual([
+      { amount: 20, reason: 'parkillerCapture' },
+      { amount: 10, reason: 'parkillerCapture' },
+    ])
+    manager.submitMove(red.pieces[0], 10)
 
     // PK6 doesn't apply to a reward move (not a single die) - green's Parkiller survives, and PK5
     // sends the arriving pawn home instead, with no further reward queued from this bounce.
     expect(green.parkiller.state).toBe('InPlay')
     expect(red.pieces[0].state).toBe('InYard')
     expect(red.pieces[0].trackPosition).toBe(-1)
-    expect(grants).toEqual([{ amount: 20, reason: 'parkillerCapture' }]) // unchanged - no new grant from the bounce
+    expect(grants).toHaveLength(2) // unchanged - no new grant from the bounce
 
     // The reward chain is done, but the double's other die (also a 3) is still unspent.
     expect(latestMoves.length).toBeGreaterThan(0)
@@ -722,7 +753,7 @@ describe('TurnManager - Parkiller (PK 1-8)', () => {
   // 'parkillerCapture' event, never falling back to plain 'capture' just because a pawn capture
   // also happened on this same move, and the split-into-two-10s option (canSplit, PC 5) must stay
   // just as available for it as it already is for a plain capture's own 20.
-  it('a move that captures both a pawn and an opposing Parkiller at once offers the reward under the Parkiller reason, split option included', () => {
+  it('a move that captures both a pawn and an opposing Parkiller at once offers the reward under the Parkiller reason, 10 at a time', () => {
     const board: BoardData = {
       playerCount: 2,
       trackLength: 60,
@@ -758,10 +789,10 @@ describe('TurnManager - Parkiller (PK 1-8)', () => {
     // Exactly one 20-square grant, under the Parkiller-specific reason - not plain 'capture', even
     // though a pawn was also captured on this same move.
     expect(grants).toEqual([{ amount: 20, reason: 'parkillerCapture' }])
-    // The split option (PC 5's "20 in one move OR 10+10") stays available - unaffected by this
-    // grant's reason no longer being the literal string 'capture'.
-    expect(latestMoves.some((m) => m.amount === 20 && m.diceSource === 'reward')).toBe(true)
-    expect(latestMoves.some((m) => m.amount === 10 && m.diceSource === 'reward')).toBe(true)
+    // Counted 10 at a time, same as a plain capture's own 20 - unaffected by this grant's reason
+    // no longer being the literal string 'capture'.
+    expect(latestMoves.length).toBeGreaterThan(0)
+    expect(latestMoves.every((m) => m.amount === 10 && m.diceSource === 'reward')).toBe(true)
   })
 
   // Client's own "Special Situations" guide, page 5 case 2: two Parkis already paired on the

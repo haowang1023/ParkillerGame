@@ -836,7 +836,7 @@ describe('TurnManager - PC 3/PC 4/PC 5 rewards', () => {
   // choice, with the always-split path being one valid way to use it, not the only one. And per the
   // client's own direct follow-up correction ("PERO SI CAMBIAS DE OPINION..."), the second 10 isn't
   // restricted to "another pawn" either - see the dedicated test below for that case on its own.
-  it('capturing an opponent grants a 20-square reward, offered as a choice between one pawn moving 20 or splitting it into two 10s', () => {
+  it('capturing an opponent grants a 20-square reward, counted as two separate 10s', () => {
     const board = buildBigTestBoard() // plenty of track room so a 20-square jump never nears home
     const red = createPlayerState('Red', board)
     const blue = createPlayerState('Blue', board)
@@ -864,12 +864,11 @@ describe('TurnManager - PC 3/PC 4/PC 5 rewards', () => {
 
     // A single 20-square grant, not two independent 10s.
     expect(grants).toEqual([{ amount: 20, reason: 'capture' }])
-    // Both amounts offered together for whichever piece(s) can reach them - pieces[1] (at 0) can
-    // reach both 10 and 20 cleanly on this board.
-    expect(latestMoves.some((m) => m.piece === red.pieces[1] && m.amount === 20 && m.diceSource === 'reward')).toBe(true)
-    expect(latestMoves.some((m) => m.piece === red.pieces[1] && m.amount === 10 && m.diceSource === 'reward')).toBe(true)
+    // Only ever 10 at a time - never one 20-square jump ("La captura no son 20 (son 10x2)").
+    expect(latestMoves.length).toBeGreaterThan(0)
+    expect(latestMoves.every((m) => m.amount === 10 && m.diceSource === 'reward')).toBe(true)
+    expect(latestMoves.some((m) => m.piece === red.pieces[1])).toBe(true)
 
-    // Picks the split path: only the 10-amount option for pieces[1].
     manager.submitMove(red.pieces[1], 10) // spends half the grant: track 0 -> 10
     expect(red.pieces[1].trackPosition).toBe(10)
 
@@ -1006,7 +1005,40 @@ describe('TurnManager - PC 3/PC 4/PC 5 rewards', () => {
     expect(latestMoves.every((m) => m.amount === 10)).toBe(true)
   })
 
-  it('capturing an opponent and taking the full 20 on one pawn resolves the whole grant in one move, no remainder', () => {
+  // Reported directly, with an in-game example: "Un peón comió a otro y debía hacer 2 x 10. En uno
+  // de los saltos de 10 cayó en un Parki y debería haber sido eliminado en vez de contar los 20
+  // seguidos" - a 20-square jump used to be offered, which skipped clean over an unprotected Parki
+  // sitting at the 10 mark.
+  it('a capture reward cannot jump over a Parki at the 10 mark - the first 10 lands on it and the pawn is eliminated', () => {
+    const board = buildBigTestBoard()
+    const red = createPlayerState('Red', board)
+    const blue = createPlayerState('Blue', board)
+    red.pieces[0].state = 'OnTrack'
+    red.pieces[0].trackPosition = 5
+    red.pieces[1].state = 'OnTrack'
+    red.pieces[1].trackPosition = 30 // unrelated - keeps the capture free to use dieA
+    blue.pieces[0].state = 'OnTrack'
+    blue.pieces[0].trackPosition = 8
+    blue.parkiller.corridorPosition = blue.parkiller.corridorLength
+    blue.parkiller.trackPosition = 18 // 10 past the capture square, not a safe square
+
+    const manager = new TurnManager(board, [red, blue], defaultRuleSettings(), new ScriptedDice([3, 1, 1]))
+    const grants: RewardGrant[] = []
+    manager.rewardOffered.on((g) => grants.push(g))
+    let latestMoves: MoveOption[] = []
+    manager.moveChoicesReady.on((m) => (latestMoves = m))
+
+    manager.requestRoll()
+    manager.submitMove(red.pieces[0], 3) // 5 -> 8, captures blue.pieces[0]
+
+    expect(latestMoves.some((m) => m.piece === red.pieces[0] && m.amount === 20)).toBe(false)
+    manager.submitMove(red.pieces[0], 10) // 8 -> 18, onto Blue's Parki
+    expect(red.pieces[0].state).toBe('InYard')
+    expect(blue.parkiller.state).toBe('InPlay')
+    expect(grants).toEqual([{ amount: 20, reason: 'capture' }]) // the other 10 is lost with the pawn
+  })
+
+  it('a pawn can still take the whole 20 of a capture, as 10 and then 10 again', () => {
     const board = buildBigTestBoard()
     const red = createPlayerState('Red', board)
     const blue = createPlayerState('Blue', board)
@@ -1029,10 +1061,15 @@ describe('TurnManager - PC 3/PC 4/PC 5 rewards', () => {
     manager.submitMove(red.pieces[0], 3) // 5 -> 8, captures blue.pieces[0]
     expect(grants).toEqual([{ amount: 20, reason: 'capture' }])
 
-    manager.submitMove(red.pieces[0], 20) // takes the full grant in one move: 8 -> 28
+    manager.submitMove(red.pieces[0], 10) // first 10: 8 -> 18
+    expect(red.pieces[0].trackPosition).toBe(18)
+    expect(grants).toEqual([
+      { amount: 20, reason: 'capture' },
+      { amount: 10, reason: 'capture' },
+    ])
+    manager.submitMove(red.pieces[0], 10) // second 10: 18 -> 28
     expect(red.pieces[0].trackPosition).toBe(28)
-    // No remainder offered - the whole 20 was claimed at once.
-    expect(grants).toHaveLength(1)
+    expect(grants).toHaveLength(2)
   })
 
   // Reported directly ("SI EN UNO DE LOS SALTOS DE 10 POR UNA RECOMPENSA CAE SOBRE UN PARKI...EL
@@ -1118,8 +1155,8 @@ describe('TurnManager - PC 3/PC 4/PC 5 rewards', () => {
 
     // Taking the reward with a barrier piece actually breaks the barrier - it's a real, voluntary
     // move, not a no-op.
-    manager.submitMove(red.pieces[0], 20)
-    expect(red.pieces[0].trackPosition).toBe(22)
+    manager.submitMove(red.pieces[0], 10)
+    expect(red.pieces[0].trackPosition).toBe(12)
     expect(red.pieces[1].trackPosition).toBe(2)
   })
 

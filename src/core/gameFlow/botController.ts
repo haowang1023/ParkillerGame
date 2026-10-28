@@ -529,36 +529,6 @@ export class BotController {
       (m) => (m.resultingTrackPosition !== -1 && this.session.board.safeTrackIndices.has(m.resultingTrackPosition)) || wouldCapture(this.session.board, m, this.session.players, false),
     )
     const finalMoves = preferSafeLanding.length > 0 ? preferSafeLanding : notAbandoningShelter
-    // Reported directly, with the client's own rulebook page: a capture's 20-square reward is a
-    // genuine choice - "Move one Pawn 20 spaces" OR "Move one Pawn 10 spaces and another pawn 10
-    // spaces" - both are real, already-working options (verified directly: turnManager.ts's own
-    // offerReward offers both amounts together for every eligible piece). But a naive "always pick
-    // the first option" bot never explores the split, since offerReward lists the full-amount
-    // moves before the split ones, so moves[0] during a reward is *always* the full amount in one
-    // piece. A human who only ever watches bot play would see nothing but "one pawn takes the
-    // whole 20" turn after turn - indistinguishable from the split simply not existing, even though
-    // it's fully implemented and available to a human player. Every move in a reward offer shares
-    // the same diceSource ('reward') - not mixed with an ordinary dieA/dieB/sum offer - so
-    // preferring the smaller amount present only ever kicks in for an actual reward decision.
-    //
-    // Reported directly again, with a screen recording ("Había dos peones fuera. Movió uno solo
-    // 10... Los otros 10 se perdieron, no movió nadie y pasó el turno" - there were two pawns out,
-    // it moved only one 10, the other 10 was lost, nobody moved, and the turn passed): the blind
-    // "always prefer the minimum amount" above never checked whether a second, genuinely different
-    // piece could actually use the complementary half before committing to the split - "two pawns
-    // out" doesn't mean the *other* one has a legal move for this exact reward distance from
-    // wherever it happens to sit (e.g. too close to its own home entrance for a valid landing).
-    // Reproduced directly: with only the capturing piece itself eligible for the 10-split, the old
-    // logic still took the 10 (throwing away the other 10 it could have kept by taking the same
-    // piece's own, equally-available 20 instead) and forfeited the remainder outright. Only worth
-    // exploring the split when at least one *other* piece is genuinely eligible for it - otherwise
-    // every "split" here is really just this one piece giving up half its own reward for nothing.
-    const isRewardOffer = finalMoves[0]?.diceSource === 'reward'
-    const minRewardAmount = isRewardOffer ? Math.min(...finalMoves.map((c) => c.amount)) : 0
-    const splitOptions = finalMoves.filter((m) => m.amount === minRewardAmount)
-    const splitPieceKeys = new Set(splitOptions.map((m) => `${m.piece.color}:${m.piece.pieceIndex}`))
-    const splitHasGenuineSecondBeneficiary = splitPieceKeys.size > 1
-    const rewardCandidates = isRewardOffer && splitHasGenuineSecondBeneficiary ? splitOptions : finalMoves
     // Requested directly ("el bot, si puede eliminar un peón de otro jugador sin riesgo, debe
     // hacerlo" - the bot, if it can eliminate an opponent's pawn without risk, must do so): a
     // capturing move already surviving every filter above (doesn't form an own barrier, doesn't
@@ -573,14 +543,11 @@ export class BotController {
     // algún salto de 10 o se cae sobre un parki y se queda eliminado" - when counting rewards,
     // likewise: check whether it eliminates a pawn on some 10-jump, or lands on a Parki and gets
     // eliminated itself): a reward move can capture too (PC5 chains a fresh 20 on top of the
-    // current one) - checked against every reward-move option in finalMoves, not just the
-    // amount-narrowed rewardCandidates above, so a capturing move using the full amount isn't
-    // silently dropped by the split-exploration preference just because a non-capturing split
-    // option happens to use less. The Parki-risk half of this same request is already covered -
+    // current one). The Parki-risk half of this same request is already covered -
     // wouldWalkIntoUnprotectedParki/wouldLeavePieceExposedToParkiller above run on every move
     // regardless of diceSource, reward moves included.
     const capturingMoves = finalMoves.filter((m) => wouldCapture(this.session.board, m, this.session.players, false))
-    const candidates = capturingMoves.length > 0 ? capturingMoves : rewardCandidates
+    const candidates = capturingMoves.length > 0 ? capturingMoves : finalMoves
     // Requested directly ("si no se puede mover un peón el total de los dos dados debe moverse con
     // el valor superior y si no es posible con el inferior pero no elegir el inferior y quedarse
     // sin utilizar el valor del otro dado" - if a pawn can't move with the sum of both dice, it
@@ -589,8 +556,7 @@ export class BotController {
     // sum is always >= either individual die, so simply preferring the largest `amount` among the
     // remaining safe candidates already gets this ordering for free - sum first when a piece can
     // use it, else whichever single die's own move goes farther. `>` (not `>=`) keeps the earliest
-    // candidate on a tie, so this doesn't disturb the reward-split preference above (every
-    // candidate there already shares the same minimum amount).
+    // candidate on a tie.
     const largestAmount = candidates.reduce((best: MoveOption | undefined, m) => (best === undefined || m.amount > best.amount ? m : best), undefined)
     const chosen = largestAmount ?? finalMoves[0] ?? safeMoves[0] ?? nonBarrierMoves[0] ?? moves[0]
     // Reported directly, with a screenshot: a piece was already glowing as "this is what the bot

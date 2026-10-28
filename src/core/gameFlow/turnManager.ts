@@ -128,15 +128,16 @@ type PendingReward = RewardGrant
 // PC 3/PC 4/PK7/PK8's reward size, in squares - a capture (own or via the Parkiller) is worth 20,
 // a finish worth 10 (a flat, non-splittable single unit either way).
 //
-// A capture's own 20 is a genuine *choice*, not a forced split - confirmed directly in the
-// client's own corrected rulebook (rules.pdf, "Bonus" pages, present on every one of Pawn
-// Capture/Parki Elimination/Bonuses): "Choose one: Move one Pawn 20 spaces. OR Move one Pawn 10
-// spaces and another pawn 10 spaces." offerReward offers *both* a 20-in-one-piece move and a
-// 10-in-one-piece move together (same amount-keyed pattern offerMoves already uses for dieA/
-// dieB/sum) - picking the 20 outright resolves the whole reward in one move, matching the
-// rulebook's own first option exactly; picking the 10 re-offers the remaining 10 to every still-
-// eligible piece (see PendingReward's own doc comment above - including the piece that just moved,
-// per the client's own direct correction).
+// A capture's own 20 is always counted as two separate 10s, never one 20-square jump - the current
+// rulebook (PK7: "each 10-space jump resulting from a reward has a chance of landing on a space
+// occupied by a pawn of a different color"), the client's 03.10.2026 test report ("no se deben
+// contar las 20 casillas de una sola vez... verificar qué ocurre al completar las primeras 10
+// casillas"), and again directly with an in-game example: a 20 taken in one go jumped clean over
+// an unprotected Parki sitting at the 10 mark, which should have eliminated the pawn ("La captura
+// no son 20 (son 10x2)"). This replaces an older rules.pdf reading ("Move one Pawn 20 spaces. OR
+// Move one Pawn 10 spaces and another pawn 10 spaces"). Moving one pawn the full 20 is still
+// possible, as 10 and then 10 again on the same pawn - the remaining 10 is re-offered to every
+// still-eligible piece (see PendingReward's own doc comment above).
 const REWARD_UNIT = 10
 
 function mod(value: number, modulus: number): number {
@@ -702,7 +703,11 @@ export class TurnManager {
       // didn't already resolve an *own-barrier* (two-pawn) case - a lone pawn sharing the
       // pre-existing Parkiller's color is never also part of a two-pawn pairing, so there's no
       // overlap to worry about.
-      const pairedWithOwnColorPawn = piecesThere.some((p) => p.color === opponent.color)
+      // Exactly PK4's own shape - one pawn alongside that Parkiller. A 3-stack (two of its pawns
+      // plus the Parkiller) already loses one pawn to the barrier rule in the pawn block above;
+      // pairing the two Parkillers on top of the pawn still left would put three pieces on one
+      // square, so that shape keeps the ordinary resolution below.
+      const pairedWithOwnColorPawn = piecesThere.length === 1 && piecesThere[0].color === opponent.color
       const formsNewSafeBarrier = pairedWithOwnColorPawn && this.board.safeTrackIndices.has(after)
       if (!formsNewSafeBarrier) {
         const alreadyPairedWithSomethingElse = piecesThere.length >= 1
@@ -1184,8 +1189,10 @@ export class TurnManager {
     if (isRewardMove && this.currentRewardGrant) {
       const grant = this.currentRewardGrant
       this.currentRewardGrant = null
+      // To the front, not the back - the second 10 of a capture comes straight after its first
+      // 10, ahead of any other reward already waiting (the second Parki of a double elimination).
       if (move.amount < grant.amount && !result.eliminatedByParkiller) {
-        this.pendingRewardQueue.push({ reason: grant.reason, amount: grant.amount - move.amount })
+        this.pendingRewardQueue.unshift({ reason: grant.reason, amount: grant.amount - move.amount })
       }
     }
 
@@ -1279,34 +1286,21 @@ export class TurnManager {
   // player, "el tema de las barreras sigue sin funcionar" - the barrier voluntary-movement fix
   // never actually reached this path.
   //
-  // A splittable grant (a fresh capture's own 20 - see PendingReward's own comment for why this
-  // isn't forced down one fixed path) offers *both* amounts together: every piece that can move
-  // the full grant amount in one go, and every piece that can move exactly REWARD_UNIT instead -
-  // same amount-keyed-per-piece pattern offerMoves() already uses for dieA/dieB/sum, so a piece
-  // reachable both ways keeps both options rather than collapsing to one. Picking the smaller
-  // amount leaves the rest queued (handled back in submitMove, right after this move applies);
-  // picking the full amount resolves the whole grant in this one move.
+  // A capture's own 20 is only ever offered 10 at a time (REWARD_UNIT's own doc comment) - the rest
+  // stays queued (handled back in submitMove, right after this move applies), so whatever the
+  // first 10 lands on (a pawn to capture, a Parki to die on) resolves before the second 10 is
+  // counted. If no piece can move 10, none could have moved 20 either - a barrier in the way, or
+  // the exact count into the finish, blocks the longer move just the same.
   private offerReward(grant: PendingReward) {
     // 'parkillerCapture' is the same size/split-eligible reward a plain 'capture' is (see
     // RewardReason's own doc comment) - only 'finish' (a flat, non-splittable REWARD_UNIT) is
     // ever excluded here.
     const canSplit = grant.reason !== 'finish' && grant.amount > REWARD_UNIT
-    const fullMoves = getValidMoves(this.board, this.currentPlayer, this.players, grant.amount, this.settings, 'reward')
-    const splitMoves = canSplit ? getValidMoves(this.board, this.currentPlayer, this.players, REWARD_UNIT, this.settings, 'reward') : []
-
-    const byPieceAndAmount = new Map<string, MoveOption>()
-    const addMoves = (moves: MoveOption[]) => {
-      for (const move of moves) {
-        const key = `${move.piece.color}:${move.piece.pieceIndex}:${move.amount}`
-        if (!byPieceAndAmount.has(key)) byPieceAndAmount.set(key, move)
-      }
-    }
-    addMoves(fullMoves)
-    addMoves(splitMoves)
+    const stepAmount = canSplit ? REWARD_UNIT : grant.amount
     // See brokenBarrierThisRoll's own doc comment - excludes the other original occupant of a
     // barrier this same roll's own earlier reward-split move just broke from recreating it with
     // this leftover half.
-    const moves = this.excludeRecreatedBarrier([...byPieceAndAmount.values()])
+    const moves = this.excludeRecreatedBarrier(getValidMoves(this.board, this.currentPlayer, this.players, stepAmount, this.settings, 'reward'))
 
     if (moves.length === 0) {
       this.rewardForfeited.emit({ amount: grant.amount, reason: grant.reason })
