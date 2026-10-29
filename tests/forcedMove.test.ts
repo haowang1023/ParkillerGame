@@ -73,6 +73,34 @@ describe('forcedMove', () => {
     expect(forcedMove(getValidMoves(board, red, [red], 3, defaultRuleSettings(), 'dieA'))).toBeNull()
   })
 
+  // "Cuando sale un 5 y hay peones en la casa y la salida está desocupada, debe salir el peón de
+  // manera automática" - even when the other die still leaves a choice for later.
+  it('plays the exit with a 5 when the exit square is free, even with other moves on offer', () => {
+    const board = buildTestBoard()
+    const red = createPlayerState('Red', board)
+    red.pieces[0].state = 'OnTrack'
+    red.pieces[0].trackPosition = 6
+    const settings = defaultRuleSettings()
+    const moves = [...getValidMoves(board, red, [red], 5, settings, 'dieA'), ...getValidMoves(board, red, [red], 3, settings, 'dieB')]
+    expect(moves.some((m) => m.kind === 'TrackMove')).toBe(true)
+
+    expect(forcedMove(moves, [red])?.kind).toBe('ExitYard')
+  })
+
+  it('leaves the choice to the player when something is already on the exit square', () => {
+    const board = buildTestBoard()
+    const red = createPlayerState('Red', board)
+    const blue = createPlayerState('Blue', board)
+    red.pieces[0].state = 'OnTrack'
+    red.pieces[0].trackPosition = 6
+    blue.pieces[0].state = 'OnTrack'
+    blue.pieces[0].trackPosition = 0 // Red's exit square
+    const settings = defaultRuleSettings()
+    const moves = [...getValidMoves(board, red, [red, blue], 5, settings, 'dieA'), ...getValidMoves(board, red, [red, blue], 3, settings, 'dieB')]
+
+    expect(forcedMove(moves, [red, blue])).toBeNull()
+  })
+
   it('returns nothing when there is nothing to play', () => {
     expect(forcedMove([])).toBeNull()
   })

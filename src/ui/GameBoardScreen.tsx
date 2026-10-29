@@ -872,7 +872,7 @@ export function GameBoardScreen({
   // play inmidiatly"): their RewardToast/RewardBurst no longer depend on the reward still being
   // pending - useHeldAlert keeps the announcement up for its own full hold either way.
   useEffect(() => {
-    const forced = forcedMove(visiblePendingMoves)
+    const forced = forcedMove(visiblePendingMoves, session.players)
     if (forced) chooseMove(forced.piece, forced.amount)
   }, [visiblePendingMoves, chooseMove])
   // See ALERT_HOLD_MS's own doc comment above - held so a fast-following move can't clear these
