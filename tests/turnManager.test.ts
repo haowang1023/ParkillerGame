@@ -2354,6 +2354,34 @@ describe('TurnManager - a double opens mixed-color barriers on a safe square too
     expect(offeredPieces.has(red.pieces[3])).toBe(false)
   })
 
+  // "Nos salió un 2,2 y teníamos dos barreras y nos abrió las dos. Solo estás obligado abrir una
+  // sola. El otro 2 lo puedes usar como quieras."
+  it('with two barriers, a double only obliges opening one - the other die is free', () => {
+    const board = buildTestBoard()
+    const red = createPlayerState('Red', board)
+    const blue = createPlayerState('Blue', board)
+    red.pieces[0].state = 'OnTrack'
+    red.pieces[0].trackPosition = 3
+    red.pieces[1].state = 'OnTrack'
+    red.pieces[1].trackPosition = 3 // barrier 1
+    red.pieces[2].state = 'OnTrack'
+    red.pieces[2].trackPosition = 14
+    red.pieces[3].state = 'OnTrack'
+    red.pieces[3].trackPosition = 14 // barrier 2
+
+    const manager = new TurnManager(board, [red, blue], defaultRuleSettings(), new ScriptedDice([2, 2, 1]))
+    let offered: MoveOption[] = []
+    manager.moveChoicesReady.on((moves) => (offered = moves))
+    manager.requestRoll()
+
+    manager.submitMove(red.pieces[0], 2) // opens barrier 1 (3 -> 5)
+    // The other 2 is free - including a piece of barrier 2, or the pawn that just moved on again.
+    const offeredPieces = new Set(offered.map((m) => m.piece))
+    expect(offeredPieces.has(red.pieces[0])).toBe(true)
+    expect(red.pieces[2].trackPosition).toBe(14)
+    expect(red.pieces[3].trackPosition).toBe(14)
+  })
+
   it('a double 5 with a barrier on the entry square must open it first - it cannot exit and capture instead', () => {
     const board = buildTestBoard()
     const red = createPlayerState('Red', board)

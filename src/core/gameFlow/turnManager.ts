@@ -797,9 +797,13 @@ export class TurnManager {
     //
     // Every barrier this player has is a candidate (barriersToOpenOnDouble's own comment), so with
     // more than one the player picks which to open - "puede abrir una u otra". A barrier this
-    // roll's own earlier die just formed is excluded via the pre-roll snapshot below; one broken
-    // earlier this roll simply isn't in the live list any more, so the double's other die moves on
-    // to whichever pre-roll barrier is still standing, if any.
+    // roll's own earlier die just formed is excluded via the pre-roll snapshot below.
+    //
+    // A double only obliges opening ONE barrier - reported directly ("Nos salió un 2,2 y teníamos
+    // dos barreras y nos abrió las dos. Solo estás obligado abrir una sola. El otro 2 lo puedes usar
+    // como quieras"), replacing an earlier reading where every pre-roll barrier stayed an
+    // obligation for the double's other die too. So the obligation only stands while every
+    // pre-roll barrier is still standing; once any of them is open, the rest of the roll is free.
     const liveBarriers = barriersToOpenOnDouble(this.board, this.currentPlayer, this.players)
     // See preRollBarrierKeys' own doc comment - captured only on the *first* offerMoves() call this
     // roll (before any white-dice move has touched anything), then reused unchanged.
@@ -807,7 +811,9 @@ export class TurnManager {
       this.preRollBarrierKeys = new Set(liveBarriers.map(barrierLocationKey))
       this.preRollBarrierCaptured = true
     }
-    const barrierLocations: BarrierLocation[] = isDoubleRoll ? liveBarriers.filter((b) => this.preRollBarrierKeys.has(barrierLocationKey(b))) : []
+    const standingPreRollBarriers = liveBarriers.filter((b) => this.preRollBarrierKeys.has(barrierLocationKey(b)))
+    const barrierLocations: BarrierLocation[] =
+      isDoubleRoll && standingPreRollBarriers.length === this.preRollBarrierKeys.size ? standingPreRollBarriers : []
     this.lastOfferedBarrierLocations = barrierLocations
     const pieceIsAtBarrier = (piece: Piece): boolean =>
       barrierLocations.some((b) =>

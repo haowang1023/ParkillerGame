@@ -279,10 +279,10 @@ function driveGame(board: BoardData, players: PlayerState[], rng: Rng, maxRolls:
         barrierSnapshotCapturedThisRoll = true
         preRollBarrierKeys = new Set(barriersToOpenOnDouble(ctx.board, manager.currentPlayer, players).map(barrierLocationKey))
       }
-      // Every pre-roll barrier still standing is an obligation, and the player may open any of
-      // them ("una u otra") - see barriersToOpenOnDouble's own doc comment.
+      // The player may open any pre-roll barrier ("una u otra"), but only one per double ("Solo
+      // estás obligado abrir una sola") - so the obligation only stands while all of them do.
       const barriers = barriersToOpenOnDouble(ctx.board, manager.currentPlayer, players).filter((b) => preRollBarrierKeys.has(barrierLocationKey(b)))
-      if (barriers.length > 0) {
+      if (barriers.length > 0 && barriers.length === preRollBarrierKeys.size) {
         const atBarrier = (m: MoveOption) =>
           barriers.some((b) =>
             b.kind === 'track'
