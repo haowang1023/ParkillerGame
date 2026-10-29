@@ -94,17 +94,9 @@ describe('TurnManager - two-dice rulebook flow', () => {
     expect(red.pieces[1].state).toBe('Finished')
   })
 
-  // Originally written to confirm free choice between dieA/dieB/sum for a piece reachable by all
-  // three ("SE DEBE PODER ELEGIR CON CUAL DE LOS DOS DADOS SE MUEVE EL PEON QUE SE DESEE") - that
-  // confirmation itself was later narrowed: superseded whenever this piece is the roll's *only*
-  // eligible one (see the "must maximize" cascade in offerMoves(), and its own doc comment there
-  // for the exact client wording this rewrite is built on: "LA OPCION DEL MAXIMO VALOR ES CUANDO
-  // SOLO SE PUEDE MOVER UNA FICHA CONCRETA"). This test's own board - a single red piece, nothing
-  // else in play - is exactly that "only one eligible piece" case, so free choice no longer
-  // applies here; it must take the sum. The sibling test right after this one exercises the
-  // *other* half of that same client correction - "EL VALOR DE LOS DADOS SE PUEDE REPARTIR ENTRE
-  // DIFERENTES PEONES" - free choice returns in full the instant a second piece has any option.
-  it('forces the sum on a piece that is this roll\'s only eligible one, instead of a free choice between dieA/dieB/sum', () => {
+  // "Cuando sale por ejemplo un 6 y 4. Y así tengas un solo peón por mover debe salir el recuadro
+  // para elegir. No debe avanzar 10 continuos." A lone piece used to be offered only the sum.
+  it('offers each die and the sum to a piece that is this roll\'s only eligible one', () => {
     const board = buildTestBoard()
     const red = createPlayerState('Red', board)
     const blue = createPlayerState('Blue', board)
@@ -119,13 +111,43 @@ describe('TurnManager - two-dice rulebook flow', () => {
 
     manager.requestRoll()
 
-    // Only the sum (7) - not dieA=3 or dieB=4 individually - since this piece is the only one in
-    // play at all and the bigger option (the sum) genuinely has somewhere legal to go.
     const forPiece0 = latestMoves.filter((m) => m.piece === red.pieces[0])
-    expect(forPiece0.map((m) => m.amount)).toEqual([7])
+    expect(forPiece0.map((m) => m.amount).sort((x, y) => x - y)).toEqual([3, 4, 7])
 
-    manager.submitMove(red.pieces[0], 7)
-    expect(red.pieces[0].trackPosition).toBe(7)
+    manager.submitMove(red.pieces[0], 4)
+    expect(red.pieces[0].trackPosition).toBe(4)
+    // the other die follows, on the same piece
+    expect(latestMoves.map((m) => m.amount)).toEqual([3])
+  })
+
+  // The other half of the same rule (PC2.1, "the pawn must use both dice"): a single die is only
+  // offered first if the other die can still be played after it.
+  it('does not offer a single die to a lone piece when the other die could not be played afterwards', () => {
+    const board = buildTestBoard()
+    const red = createPlayerState('Red', board)
+    const blue = createPlayerState('Blue', board)
+    red.pieces[0].state = 'InHomeCorridor'
+    red.pieces[0].corridorPosition = 2 // finishing needs exactly 3 more (final slot is 5)
+
+    const manager = new TurnManager(board, [red, blue], defaultRuleSettings(), new ScriptedDice([2, 1, 1]))
+    let latestMoves: MoveOption[] = []
+    manager.moveChoicesReady.on((m) => (latestMoves = m))
+    manager.requestRoll()
+
+    // 2 then 1 -> finish: fine. 1 then 2 -> finish: fine. Sum 3 -> finish: fine.
+    expect(latestMoves.map((m) => m.amount).sort((x, y) => x - y)).toEqual([1, 2, 3])
+
+    const manager2Red = createPlayerState('Red', board)
+    const manager2Blue = createPlayerState('Blue', board)
+    manager2Red.pieces[0].state = 'InHomeCorridor'
+    manager2Red.pieces[0].corridorPosition = 1 // finishing needs exactly 4
+    const manager2 = new TurnManager(board, [manager2Red, manager2Blue], defaultRuleSettings(), new ScriptedDice([4, 3, 1]))
+    let latest2: MoveOption[] = []
+    manager2.moveChoicesReady.on((m) => (latest2 = m))
+    manager2.requestRoll()
+    // 4 first finishes, leaving nothing able to play the 3; 3 first -> slot 4, then 4 overshoots;
+    // the sum (7) overshoots. No way to use both dice - falls back to the bigger die alone.
+    expect(latest2.map((m) => m.amount)).toEqual([4])
   })
 
   // The other half of the same client correction this file's own doc comment above quotes: "EL
@@ -164,16 +186,12 @@ describe('TurnManager - two-dice rulebook flow', () => {
     expect(red.pieces[0].trackPosition).toBe(4)
   })
 
-  // The client's own canonical worked example for the "must maximize" rule, verbatim: "SI SALE 2 Y
-  // 1: TIENES UN PEON DE OTRO JUGADOR A UNO. NO PUEDES MOVER NADA MAS QUE CON ESE PEON Y HAY DOS
-  // ESPACIOS. DEBES MOVER LOS DOS Y NO PUEDES ELIMINAR AL ADVERSARIO QUE ESTABA A UNO... LA REGLA
-  // DICE QUE SI PUEDES DEBES MOVER CON EL DADO DE MAXIMO VALOR" (if 2 and 1 come up: you have
-  // another player's pawn one square away. You can't move anything but that pawn, and it has two
-  // more squares [the other die]. You must move both, and you can't eliminate the opponent that
-  // was one square away... the rule says if you can, you must move with the die of maximum
-  // value) - the capture die (1) is legal but smaller than the sum (3), and this pawn is the only
-  // one that can move at all, so the sum wins and the capture is never actually offered.
-  it("forces the sum over a smaller die that would have captured, when the capturing piece is this roll's only eligible one", () => {
+  // The client's earlier worked example ("SI SALE 2 Y 1: TIENES UN PEON DE OTRO JUGADOR A UNO... NO
+  // PUEDES ELIMINAR AL ADVERSARIO QUE ESTABA A UNO") said the lone pawn had to take the sum and skip
+  // the capture. Superseded by the later "Y así tengas un solo peón por mover debe salir el recuadro
+  // para elegir... se puede dar el caso que con 6 o 4 eliminas un peón": the single die is offered,
+  // and PC3 ("you cannot jump without capturing") then makes the capture the move to play.
+  it('a lone pawn whose single die lands on an opponent captures it instead of jumping past with the sum', () => {
     const board = buildTestBoard()
     const red = createPlayerState('Red', board)
     const blue = createPlayerState('Blue', board)
@@ -189,14 +207,11 @@ describe('TurnManager - two-dice rulebook flow', () => {
     manager.moveChoicesReady.on((m) => (latestMoves = m))
     manager.requestRoll()
 
-    // Only the sum (3) is offered - not dieA=1, even though it would capture.
     const forPiece0 = latestMoves.filter((m) => m.piece === red.pieces[0])
-    expect(forPiece0.map((m) => m.amount)).toEqual([3])
+    expect(forPiece0.map((m) => m.amount)).toEqual([1])
 
-    const result = manager.submitMove(red.pieces[0], 3)
-    expect(result?.capturedPiece).toBeNull()
-    expect(blue.pieces[0].state).toBe('OnTrack') // untouched - never actually reachable this roll
-    expect(red.pieces[0].trackPosition).toBe(3)
+    const result = manager.submitMove(red.pieces[0], 1)
+    expect(result?.capturedPiece).toBe(blue.pieces[0])
   })
 
   it('exits the yard on a single die showing the exit roll', () => {

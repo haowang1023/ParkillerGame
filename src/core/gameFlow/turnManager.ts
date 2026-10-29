@@ -888,13 +888,28 @@ export class TurnManager {
       const pieces = new Set([...dieAMoves.map((m) => m.piece), ...dieBMoves.map((m) => m.piece)])
       return pieces.size === 1 ? [...pieces][0] : null
     })()
+    // Corrected directly, later: offering *only* the sum made that one pawn jump the whole distance
+    // in one go - skipping whatever a single die would have landed on ("Cuando sale por ejemplo un
+    // 6 y 4. Y así tengas un solo peón por mover debe salir el recuadro para elegir. No debe
+    // avanzar 10 continuos. Por que se puede dar el caso que con 6 o 4 eliminas un peón"). So the
+    // pawn is offered each die on its own as well as the sum - but a single die only if the other
+    // die can still be played after it, so both dice still get used whenever that's possible. A
+    // die that captures is always kept (PC3 makes that capture mandatory for this piece anyway). If
+    // no way of using both dice exists, the old fallback stands: the bigger die, else the smaller.
     if (soleEligiblePiece && dieAMoves && dieBMoves && sumMoves) {
       const forPiece = (moves: MoveOption[]) => moves.filter((m) => m.piece === soleEligiblePiece)
       const sumForPiece = forPiece(sumMoves)
+      const singleDieKeepingOtherDie = [...forPiece(dieAMoves), ...forPiece(dieBMoves)].filter(
+        (m) =>
+          wouldCapture(this.board, m, this.players, this.parkillerCapturableThisRoll, this.piecesMovedThisRoll) ||
+          this.otherDieStillPlayable(m, m.diceSource === 'dieA' ? state.dieB : state.dieA, isDoubleRoll),
+      )
       const biggerForPiece = forPiece(state.dieA > state.dieB ? dieAMoves : dieBMoves)
       const smallerForPiece = forPiece(state.dieA > state.dieB ? dieBMoves : dieAMoves)
-      if (sumForPiece.length > 0) addMoves(sumForPiece)
-      else if (biggerForPiece.length > 0) addMoves(biggerForPiece)
+      if (sumForPiece.length > 0 || singleDieKeepingOtherDie.length > 0) {
+        addMoves(singleDieKeepingOtherDie)
+        addMoves(sumForPiece)
+      } else if (biggerForPiece.length > 0) addMoves(biggerForPiece)
       else addMoves(smallerForPiece)
     } else {
       if (dieAMoves) addMoves(applyObligations(dieAMoves, dieAHasExit))
@@ -1222,6 +1237,25 @@ export class TurnManager {
   // See brokenBarrierThisRoll's own doc comment - shared by offerMoves() (a double's own barrier-
   // break) and offerReward() (a reward's own split re-queue), the two ways this roll can reach a
   // "just broke a barrier, don't let its other original occupant recreate it" state.
+  // Whether, after `move`, any piece could still play `otherAmount` - checked by placing the
+  // moving piece where `move` would leave it, asking getValidMoves, and putting it straight back.
+  private otherDieStillPlayable(move: MoveOption, otherAmount: number, isDoubleRoll: boolean): boolean {
+    const piece = move.piece
+    const saved = { state: piece.state, trackPosition: piece.trackPosition, corridorPosition: piece.corridorPosition }
+    if (move.kind === 'TrackMove') {
+      piece.trackPosition = move.resultingTrackPosition
+    } else if (move.kind === 'CorridorMove' || move.kind === 'FinishMove') {
+      piece.state = move.kind === 'FinishMove' ? 'Finished' : 'InHomeCorridor'
+      piece.trackPosition = -1
+      piece.corridorPosition = move.resultingCorridorPosition
+    }
+    const playable = getValidMoves(this.board, this.currentPlayer, this.players, otherAmount, this.settings, 'dieA', isDoubleRoll).length > 0
+    piece.state = saved.state
+    piece.trackPosition = saved.trackPosition
+    piece.corridorPosition = saved.corridorPosition
+    return playable
+  }
+
   private excludeRecreatedBarrier(moves: MoveOption[]): MoveOption[] {
     const broken = this.brokenBarrierThisRoll
     if (!broken) return moves
